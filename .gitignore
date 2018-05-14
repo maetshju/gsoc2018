@@ -1,0 +1,13 @@
+*.WAV
+*.PHN
+
+speech-cnn/TIMIT/*
+!speech-cnn/TIMIT/README.md
+!speech-cnn/TIMIT/TRAIN/README.md
+!speech-cnn/TIMIT/TEST/README.md
+
+speech-cnn/train/*
+!speech-cnn/train/README.md
+
+speech-cnn/test/*
+!speech-cnn/test/README.md
