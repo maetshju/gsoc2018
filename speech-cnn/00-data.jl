@@ -51,8 +51,18 @@ function make_data(phn_fname, wav_fname)
     samps = vec(samps)
 
     frames = powspec(samps, sr; wintime=FRAME_LENGTH, steptime=FRAME_INTERVAL)
-    fbanks = audspec(frames, sr; nfilts=40, fbtype=:mel)
-    # TODO: still need to get energy term coefficient
+
+    # I am assuming we want log energy because Mel scale is a log scale
+    # If not, we can remove the log
+
+    # Transpose so that we get each row as an observation of variables, as
+    # opposed to each column as an observation of variables; not that one is
+    # inherently better than the other, but most work I've encountered seems to
+    # prefer rows as observations, and that's how I think about the problems too
+    energies = log.(sum(frames', 2))
+
+    fbanks = audspec(frames, sr; nfilts=40, fbtype=:mel)'
+    fbanks = hcat(fbanks, energies)
 
     local lines
     open(phn_fname, "r") do f
@@ -98,7 +108,10 @@ function make_data(phn_fname, wav_fname)
         push!(seq, label)
     end
 
-    return (fbanks, seq)
+    fbank_deltas = deltas(fbanks)
+    fbank_deltadeltas = deltas(fbank_deltas)
+    features = hcat(fbanks, fbank_deltas, fbank_deltadeltas)
+    return (features, seq)
 end
 
 function create_data(data_dir, out_dir)
@@ -117,7 +130,7 @@ function create_data(data_dir, out_dir)
 
             y = [haskey(COLLAPSINGS, x) ? COLLAPSINGS[x]: x for x in y]
             y = [PHONE_TRANSLATIONS[x] for x in y]
-            class_nums = [n for n in 1:61] # but only 39 use after folding
+            class_nums = [n for n in 1:61] # but only 39 used after folding
             y = onehotbatch(y, class_nums)
 
             base, _ = splitext(phn_fname)
