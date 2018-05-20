@@ -1,13 +1,13 @@
 using Flux
-using Flux: crossentropy
+using Flux: binarycrossentropy, throttle
 using JLD
 
 const TRAINDIR = "train"
 const TESTDIR = "test"
 
-net = Chain(Dense(123, 64),
-            Dense(64, 2),
-            softmax)
+net = Chain(Dense(123, 64, relu),
+            Dense(64, 1, σ),
+            )
 
 function readData(data_dir)
     fnames = [x for x in readdir(data_dir) if endswith(x, "jld")]
@@ -19,7 +19,7 @@ function readData(data_dir)
         print(string(i) * "/" * string(length(fnames)) * "\r")
         x, y = load(joinpath(data_dir, fname), "x", "y")
         # Want to pull /eh/ and /sh/ frames out of the data. Base on the
-        # dictionary mapping from the extraction:
+        # dictionary mapping from the println(size(y))extraction:
         # /sh/ = 10
         # /eh/ = 3
         sh = [i == 10 for i in 1:61]
@@ -31,22 +31,44 @@ function readData(data_dir)
             continue
         end
         x = x[idxs,:]
-        y = y[idxs]
+        x .-= mean(x,2)
+        x ./= std(x,2)
+        y = y[idxs,:]
+        y = [y[i,:] == sh ? 1 : 0 for i in 1:size(y,1)]
         x = [x[i,:] for i in 1:size(x,1)]
-        y = [y[i,:] for i in 1:size(y,1)]
+        #y = [y[i,:] for i in 1:size(y,1)]
         push!(Xs, x)
         push!(Ys, y)
     end
     return (Xs, Ys)
 end
 
-loss(x, y) = sum(crossentropy.(net.(x), y))
+loss(x, y) = sum(binarycrossentropy.(net.(x), y))
+
+function predict(x)
+    ŷ = net(x)
+    return ŷ
+end
+
+function evaluateAccuracy(data)
+    correct = Vector()
+    for (x, y) in data
+        y = indmax.(y)
+        ŷ = indmax.(predict.(x))
+        correct = vcat(correct,
+                        [ŷ_n == y_n for (ŷ_n, y_n) in zip(ŷ, y)])
+    end
+    sum(correct) / length(correct)
+end
 
 println("reading data")
 Xs, Ys = readData(TRAINDIR)
 println()
 data = collect(zip(Xs, Ys))
+valData = data[1:100]
+data = data[101:end]
 opt = ADAM(params(net))
-println(size(Xs[1][1]))
 println("training")
 Flux.train!(loss, data, opt)
+println("Validation tests")
+println(evaluateAccuracy(valData))
