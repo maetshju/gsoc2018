@@ -70,5 +70,20 @@ data = data[101:end]
 opt = ADAM(params(net))
 println("training")
 Flux.train!(loss, data, opt)
-println("Validation tests")
-println(evaluateAccuracy(valData))
+print("Validation tests\r")
+valAcc = evaluateAccuracy(valData)
+println("Validation acc. $(valAcc)")
+
+# Clean up some memory
+
+valData = 0
+data = 0
+Xs = 0
+Ys = 0
+gc()
+
+print("Testing\r")
+XsTest, YsTest = readData(TESTDIR)
+testData = collect(zip(XsTest, YsTest))
+testAcc = evaluateAccuracy(testData)
+println("Test acc. $(testAcc)")
