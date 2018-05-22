@@ -53,8 +53,8 @@ end
 function evaluateAccuracy(data)
     correct = Vector()
     for (x, y) in data
-        y = indmax.(y)
-        ŷ = indmax.(predict.(x))
+        ŷ = [Flux.Tracker.data(ŷ[1]) for ŷ in predict.(x)]
+        ŷ = round.(Int64, ŷ)
         correct = vcat(correct,
                         [ŷ_n == y_n for (ŷ_n, y_n) in zip(ŷ, y)])
     end
