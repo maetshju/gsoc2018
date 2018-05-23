@@ -97,7 +97,6 @@ end
 function loss(x, y)
     # l = sum(crossentropy.(model(x), y))
     m = model(x)
-    # println("----------")
     println(y)
     l = sum(binarycrossentropy.(m, y; average=false))
     println(m)
