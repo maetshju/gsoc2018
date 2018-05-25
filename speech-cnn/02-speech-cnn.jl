@@ -2,7 +2,7 @@ using Flux
 using Flux: relu, crossentropy
 using Flux: binarycrossentropy
 using NNlib: σ_stable
-# using CUArrays
+using CuArrays
 using FileIO
 
 const TRAINDIR = "train"
@@ -30,7 +30,7 @@ convSection = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
                     Dropout(0.3),
                     Conv((3, 5), 256=>256, relu, pad=(1, 2)),
                     # Dropout(0.3)) |> gpu
-                    Dropout(0.3))
+                    Dropout(0.3)) |> gpu
 
 println("Building dense section")
 denseSection = Chain(Dense(3328, 1024, relu),
@@ -38,7 +38,7 @@ denseSection = Chain(Dense(3328, 1024, relu),
                      Dense(1024, 1024, relu),
                     #  Dense(1024, 61, identity),
                     #  softmax) |> gpu
-                    Dense(1024, 1, σ_stable))
+                    Dense(1024, 1, σ_stable)) |> gpu
 
 function model(data)
     afterConv = convSection(data)
@@ -58,16 +58,18 @@ function readData(data_dir)
     Ys = Vector()
 
     for (i, fname) in enumerate(fnames)
-        #=print(string(i) * "/" * string(length(fnames)) * "\r")
+        print(string(i) * "/" * string(length(fnames)) * "\r")
         x, y = load(joinpath(data_dir, fname), "x", "y")
         x .-= mean(x,2)
         x ./= std(x,2)
         x = reshape(x, (size(x)[1], 41, 3, 1))
         y = [y[i,:] for i in 1:size(y,1)]
+	x = gpu.(x)
+	y = gpu.(y)
 
         push!(Xs, x)
-        push!(Ys, y)=#
-        print(string(i) * "/" * string(length(fnames)) * "\r")
+        push!(Ys, y)
+        #=print(string(i) * "/" * string(length(fnames)) * "\r")
         x, y = load(joinpath(data_dir, fname), "x", "y")
         # Want to pull /eh/ and /sh/ frames out of the data. Base on the
         # dictionary mapping from the println(size(y))extraction:
@@ -89,18 +91,24 @@ function readData(data_dir)
         x = reshape(x, (size(x)[1], 41, 3, 1))
         #y = [y[i,:] for i in 1:size(y,1)]
         push!(Xs, x)
-        push!(Ys, y)
+        push!(Ys, y)=#
     end
     return (Xs, Ys)
 end
 
 function loss(x, y)
-    # l = sum(crossentropy.(model(x), y))
-    m = model(x)
+    l = sum(crossentropy.(model(x), y))
+    #=m = model(x)
     println(y)
+    println("made predictions")
     l = sum(binarycrossentropy.(m, y; average=false))
+    bces = Vector()
+    for (mi, yi) in zip(m, y)
+    	push!(bces, binarycrossentropy(mi, yi))
+    end
+    l = sum(bces)
     println(m)
-    println("$(l)\t$(l/size(x)[1])")
+    println("$(l)\t$(l/size(x)[1])")=#
     l
 end
 
@@ -127,6 +135,7 @@ end
 println("Gathering data")
 Xs, Ys = readData(TRAINDIR)
 data = collect(zip(Xs, Ys))
+#data = gpu.(data)
 valData = data[1:100]
 data = data[101:end]
 p = params((convSection, denseSection))
