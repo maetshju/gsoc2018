@@ -64,8 +64,8 @@ function readData(data_dir)
         x ./= std(x,2)
         x = reshape(x, (size(x)[1], 41, 3, 1))
         y = [y[i,:] for i in 1:size(y,1)]
-	x = gpu.(x)
-	y = gpu.(y)
+	#x = gpu.(x)
+	#y = gpu.(y)
 
         push!(Xs, x)
         push!(Ys, y)
@@ -135,7 +135,7 @@ end
 println("Gathering data")
 Xs, Ys = readData(TRAINDIR)
 data = collect(zip(Xs, Ys))
-#data = gpu.(data)
+data = gpu.(data)
 valData = data[1:100]
 data = data[101:end]
 p = params((convSection, denseSection))
