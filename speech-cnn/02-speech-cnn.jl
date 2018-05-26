@@ -120,7 +120,7 @@ function loss(x, y)
 end
 
 function predict(x)
-    ŷ = model(x)
+    ŷ = softmax.(model(x))
     return ŷ
 end
 
