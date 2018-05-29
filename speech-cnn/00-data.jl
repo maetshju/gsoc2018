@@ -5,19 +5,24 @@ using WAV
 # accepted my pull request that updated the depreacted `iceil` to `ceil`
 # https://github.com/maetshju/MFCC.jl
 using MFCC
-#using JLD
+using JLD
 using FileIO
 
+# Define constants that will be used
 const TRAINING_DATA_DIR = "TIMIT/TRAIN"
 const TEST_DATA_DIR = "TIMIT/TEST"
 
 const TRAINING_OUT_DIR = "train"
 const TEST_OUT_DIR = "test"
 
+# Make dictionary to map from phones to class numbers
 const PHONES = split("h#	q	eh	dx	iy	r	ey	ix	tcl	sh	ow	z	s	hh	aw	m	t	er	l	w	aa	hv	ae	dcl	y	axr	d	kcl	k	ux	ng	gcl	g	ao	epi	ih	p	ay	v	n	f	jh	ax	en	oy	dh	pcl	ah	bcl	el	zh	uw	pau	b	uh	th	ax-h	em	ch	nx	eng")
-PHONE_TRANSLATIONS = Dict(phone=>i for (i, phone) in enumerate(PHONES))
-PHONE_TRANSLATIONS["sil"] = PHONE_TRANSLATIONS["h#"]
-const COLLAPSINGS = Dict(
+translations = Dict(phone=>i for (i, phone) in enumerate(PHONES))
+translations["sil"] = translations["h#"]
+const PHONE_TRANSLATIONS = translations
+
+# Make dictionary to perform class folding
+const FOLDINGS = Dict(
     "ao" => "aa",
     "ax" => "ah",
     "ax-h" => "ah",
@@ -47,8 +52,11 @@ const COLLAPSINGS = Dict(
 FRAME_LENGTH = 0.025 # ms
 FRAME_INTERVAL = 0.010 # ms
 
-function make_data(phn_fname, wav_fname)
-    samps, sr = wavread(wav_fname)
+"""
+    makeFeatures(phnFname, wavFname)
+"""
+function makeFeatures(phnFname, wavFname)
+    samps, sr = wavread(wavFname)
     samps = vec(samps)
 
     frames = powspec(samps, sr; wintime=FRAME_LENGTH, steptime=FRAME_INTERVAL)
@@ -66,7 +74,7 @@ function make_data(phn_fname, wav_fname)
     fbanks = hcat(fbanks, energies)
 
     local lines
-    open(phn_fname, "r") do f
+    open(phnFname, "r") do f
         lines = readlines(f)
     end
 
@@ -120,26 +128,30 @@ function make_data(phn_fname, wav_fname)
     return (features, seq)
 end
 
-function create_data(data_dir, out_dir)
+function createData(data_dir, out_dir)
     for (root, dirs, files) in walkdir(data_dir)
-        phn_fnames = [x for x in files if contains(x, "PHN")]
-        wav_fnames = [x for x in files if contains(x, "WAV")]
+
+        # Exclude the files that are part of the speaker accent readings
+        files = [x for x in files if ! contains(x, "SA")]
+
+        phnFnames = [x for x in files if contains(x, "PHN")]
+        wavFnames = [x for x in files if contains(x, "WAV")]
 
         one_dir_up = basename(root)
         println(root)
 
-        for (phn_fname, wav_fname) in zip(phn_fnames, wav_fnames)
-            phn_path = joinpath(root, phn_fname)
-            wav_path = joinpath(root, wav_fname)
+        for (phnFname, wavFname) in zip(phnFnames, wavFnames)
+            phn_path = joinpath(root, phnFname)
+            wav_path = joinpath(root, wavFname)
 
-            x, y = make_data(phn_path, wav_path)
+            x, y = makeFeatures(phn_path, wav_path)
 
-            y = [haskey(COLLAPSINGS, x) ? COLLAPSINGS[x]: x for x in y]
+            y = [haskey(FOLDINGS, x) ? FOLDINGS[x]: x for x in y]
             y = [PHONE_TRANSLATIONS[x] for x in y]
             class_nums = [n for n in 1:61] # but only 39 used after folding
             y = onehotbatch(y, class_nums)'
 
-            base, _ = splitext(phn_fname)
+            base, _ = splitext(phnFname)
             dat_name = one_dir_up * base * ".jld"
             dat_path = joinpath(out_dir, dat_name)
             save(dat_path, "x", x, "y", y)
@@ -147,5 +159,5 @@ function create_data(data_dir, out_dir)
     end
 end
 
-create_data(TRAINING_DATA_DIR, TRAINING_OUT_DIR)
-create_data(TEST_DATA_DIR, TEST_OUT_DIR)
+createData(TRAINING_DATA_DIR, TRAINING_OUT_DIR)
+createData(TEST_DATA_DIR, TEST_OUT_DIR)
