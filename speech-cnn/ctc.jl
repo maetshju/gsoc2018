@@ -1,5 +1,5 @@
-using Flux: gpu
-using CuArrays
+using Flux: gpu, softmax
+#using CuArrays
 
 function ctc(x, y)
 
@@ -12,7 +12,7 @@ function ctc(x, y)
         z = [prev]
         for curr in A[2:end]
             if curr != prev && curr != blank
-                push!(l, curr)
+                push!(z, curr)
             end
             prev = curr
         end
@@ -35,25 +35,75 @@ function ctc(x, y)
         return z′
     end
 
-    blank = 62
+    # blank = 62
+    blank = length(y[1])
 
     ŷ = softmax.(model(x))
     z′ = addBlanks(F(indmax.(y)))
-    T = size(ŷ, 1)
+    T = length(y)
     U′ = length(z′)
 
+    function α()
+        mat = gpu(zeros(T, U′))
+        mat[1,1] = ŷ[1][blank]
+        mat[1,2] = ŷ[1][z′[1]]
+
+        println("$(T), $(U′)")
+
+        for t=2:T
+            for u=1:U′
+                if u >= U′ - 2 * (T - t) - 1
+                    idx = u-2
+                    println("first check")
+                    println(t, " ", u)
+                    if z′[u] == blank || (u > 2 && z′[u-2] == z′[u])
+                        idx += 1
+                    end
+                    println("first check complete")
+                    idx = max(1,idx)
+                    mat[t,u] = ŷ[t][z′[u]] * sum(mat[t-1, idx:u])
+                end
+            end
+        end
+        return mat
+    end
+
+
     function α(t, u)
-        mat = zeros(t, u)
-        mat[1,1] = ŷ[1,blank]
-        mat[1,2] = ŷ[1, z′[1]] # z′ is the modified version of the output sequence
+        println(z′)
+        println(ŷ)
+        mat = gpu(zeros(t, u))
+        mat[1,1] = ŷ[1][blank]
+        mat[1,2] = ŷ[1][z′[1]] # z′ is the modified version of the output sequence
         for i=2:t # start at 2 because everything in row 1 except [1,1:2] is 0
             for j=1:u
                 idx = j-2
                 idx += z′[j] == blank || z′[j-2] == z′[j]
-                mat[i,j] = ŷ[i,z′[j] * sum(mat[i-1, idx:j])]
+                mat[i,j] = ŷ[i][z′[j] * sum(mat[i-1, idx:j])]
             end
         end
         return mat[t,u]
+    end
+
+    function β()
+        mat = gpu(zeros(T, U′))
+        mat[T,1:U′-2] = 0
+        for t=T:-1:1
+            for u=U′:-1:1
+                if u > 2*t
+                    mat[t,u] = 0
+                elseif t == T && u >= U′ - 1
+                    mat[t,u] = 1
+                elseif t == T && u < U′ - 1
+                    mat[t,u] = 0
+                else
+                    idx = u+1
+                    idx += z′[u] == blank || (idx < U′ && z′[u+2] == z′[u])
+                    mat[t,u] = sum(mat[t+1,u:idx] .* ŷ[t][z′[u:idx]])
+                end
+            end
+        end
+        return mat
     end
 
     function β(t, u)
@@ -68,7 +118,7 @@ function ctc(x, y)
                     idx = j+1
                     idx += z′[j] == blank || z′[j+2] == z′[j]
 
-                    mat[i,j] = sum(mat[i+1,j:idx] .* ŷ[i, z′[j:idx]])
+                    mat[i,j] = sum(mat[i+1,j:idx] .* ŷ[i][z′[j:idx]])
                 end
             end
         # since we've built this from bottom-right to upper-left, we should be
@@ -77,9 +127,17 @@ function ctc(x, y)
         return mat[1,1]
     end
 
+    # s = 0
+    # for t=1:length(ŷ)
+    #     s += sum([α(t,u) * β(t,u) for u in 1:U′])
+    # end
+    # s = sum([α(T,u) * β(T,u) for u in 1:U′])
+    alpha = α()
+    beta = β()
+
     s = 0
-    for t=1:size(ŷ, 2)
-        s += sum([α(t,u) * β(t,u) for u in 1:U′])
+    for t=1:length(ŷ)
+        s += sum(alpha[t,1:U′] .* beta[t,1:U′])
     end
 
     return -log(s)
