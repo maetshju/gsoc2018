@@ -21,17 +21,11 @@ function ctc(x, y)
 
     function addBlanks(z)
 
-        prev = z[1]
-        z′ = [prev]
-        for curr in z
-            if curr == prev
-                push!(z′, blank)
-            end
-            push!(z′, curr)
-            prev = curr
+        z′ = [blank]
+        for label in z
+            push!(z′, label)
+            push!(z′, blank)
         end
-        push!(z′, blank)
-        insert!(z′, 1, blank)
         return z′
     end
 
@@ -40,7 +34,7 @@ function ctc(x, y)
 
     ŷ = softmax.(model(x))
     z′ = addBlanks(F(indmax.(y)))
-    T = length(y)
+    T = length(ŷ)
     U′ = length(z′)
 
     function α()
@@ -137,8 +131,8 @@ function ctc(x, y)
 
     s = 0
     for t=1:length(ŷ)
-        s += sum(alpha[t,1:U′] .* beta[t,1:U′])
+        s += -log(sum(alpha[t,1:U′] .* beta[t,1:U′]))
     end
 
-    return -log(s)
+    return s
 end
