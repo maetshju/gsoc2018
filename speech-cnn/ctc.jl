@@ -1,7 +1,10 @@
-using Flux: gpu, softmax
-#using CuArrays
+using Flux: gpu
+using CuArrays
 
-function ctc(x, y)
+# TODO: need to convert to log space
+# TODO: see if we need the loss to be a Tracked value
+
+function ctc(ŷ, y)
 
     function logadd(a, b)
         return log(a) + log(1+exp(log(b) - log(a)))
@@ -32,7 +35,9 @@ function ctc(x, y)
     # blank = 62
     blank = length(y[1])
 
-    ŷ = softmax.(model(x))
+    println(typeof(ŷ))
+    ŷ = Flux.Tracker.data.(ŷ)
+    println(typeof(ŷ))
     z′ = addBlanks(F(indmax.(y)))
     T = length(ŷ)
     U′ = length(z′)
@@ -42,18 +47,13 @@ function ctc(x, y)
         mat[1,1] = ŷ[1][blank]
         mat[1,2] = ŷ[1][z′[1]]
 
-        println("$(T), $(U′)")
-
         for t=2:T
             for u=1:U′
                 if u >= U′ - 2 * (T - t) - 1
                     idx = u-2
-                    println("first check")
-                    println(t, " ", u)
                     if z′[u] == blank || (u > 2 && z′[u-2] == z′[u])
                         idx += 1
                     end
-                    println("first check complete")
                     idx = max(1,idx)
                     mat[t,u] = ŷ[t][z′[u]] * sum(mat[t-1, idx:u])
                 end
@@ -80,6 +80,7 @@ function ctc(x, y)
     end
 
     function β()
+        println("entering beta")
         mat = gpu(zeros(T, U′))
         mat[T,1:U′-2] = 0
         for t=T:-1:1
@@ -93,6 +94,7 @@ function ctc(x, y)
                 else
                     idx = u+1
                     idx += z′[u] == blank || (idx < U′ && z′[u+2] == z′[u])
+                    idx = min(idx, U′)
                     mat[t,u] = sum(mat[t+1,u:idx] .* ŷ[t][z′[u:idx]])
                 end
             end
