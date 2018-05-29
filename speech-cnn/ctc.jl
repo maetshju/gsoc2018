@@ -73,8 +73,9 @@ function ctc(x, y)
             end
         # since we've built this from bottom-right to upper-left, we should be
         # okay, yes?
-        return mat[1,1]
         end
+        return mat[1,1]
+    end
 
     s = 0
     for t=1:size(ŷ, 2)
