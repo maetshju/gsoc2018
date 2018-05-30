@@ -1,5 +1,5 @@
 using Flux: gpu
-# using CuArrays
+using CuArrays
 
 # TODO: need to convert to log space
 # TODO: see if we need the loss to be a Tracked value
@@ -61,8 +61,8 @@ function ctc(ŷ, y)
     # blank = 62
     blank = length(ŷ[1])
 
-    ŷ = Flux.Tracker.data.(ŷ)
-    lgŷ = [log.(ŷi) for ŷi in ŷ]
+    # ŷ = Flux.Tracker.data.(ŷ)
+    lgŷ = [log.(ŷI) for ŷI in ŷ]
     z = F(indmax.(y))
     z′ = addBlanks(z)
     T = length(ŷ)
