@@ -1,13 +1,39 @@
 using Flux: gpu
-using CuArrays
+# using CuArrays
 
 # TODO: need to convert to log space
 # TODO: see if we need the loss to be a Tracked value
 
 function ctc(ŷ, y)
 
+    # function logadd(a, b)
+    #     return log(a) + log(1+exp(log(b) - log(a)))
+    # end
+
+    """
+        logadd(a, b)
+
+    Returns the value of log(a + b), assuming that a and b
+    have already been converted to log space
+    """
     function logadd(a, b)
-        return log(a) + log(1+exp(log(b) - log(a)))
+        # if !isinf(a) && isinf(b)
+        #     return a
+        # elseif isinf(a) && !isinf(b)
+        #     return b
+        # end
+        if isinf(a) || isinf(b)
+            return log(exp(a) + exp(b))
+        end
+        return a + log(1+exp(b-a))
+    end
+
+    function logadd(a)
+        s = a[1]
+        for item in a[2:end]
+            s = logadd(s, item)
+        end
+        return s
     end
 
     function F(A)
@@ -33,19 +59,21 @@ function ctc(ŷ, y)
     end
 
     # blank = 62
-    blank = length(y[1])
+    blank = length(ŷ[1])
 
-    println(typeof(ŷ))
     ŷ = Flux.Tracker.data.(ŷ)
-    println(typeof(ŷ))
-    z′ = addBlanks(F(indmax.(y)))
+    lgŷ = [log.(ŷi) for ŷi in ŷ]
+    z = F(indmax.(y))
+    z′ = addBlanks(z)
     T = length(ŷ)
     U′ = length(z′)
 
+
+
     function α()
-        mat = gpu(zeros(T, U′))
-        mat[1,1] = ŷ[1][blank]
-        mat[1,2] = ŷ[1][z′[1]]
+        mat = gpu(log.(zeros(T, U′)))
+        mat[1,1] = lgŷ[1][blank]
+        mat[1,2] = lgŷ[1][z[1]]
 
         for t=2:T
             for u=1:U′
@@ -55,86 +83,76 @@ function ctc(ŷ, y)
                         idx += 1
                     end
                     idx = max(1,idx)
-                    mat[t,u] = ŷ[t][z′[u]] * sum(mat[t-1, idx:u])
+                    # mat[t,u] = ŷ[t][z′[u]] * sum(mat[t-1, idx:u])
+                    # s = mat[t-1, idx]
+                    # for n=(idx+1):u
+                    #     s = logadd(s, mat[t-1, n])
+                    # end
+                    mat[t,u] = lgŷ[t][z′[u]] + logadd(mat[t-1, idx:u])
                 end
             end
         end
         return mat
     end
 
-
-    function α(t, u)
-        println(z′)
-        println(ŷ)
-        mat = gpu(zeros(t, u))
-        mat[1,1] = ŷ[1][blank]
-        mat[1,2] = ŷ[1][z′[1]] # z′ is the modified version of the output sequence
-        for i=2:t # start at 2 because everything in row 1 except [1,1:2] is 0
-            for j=1:u
-                idx = j-2
-                idx += z′[j] == blank || z′[j-2] == z′[j]
-                mat[i,j] = ŷ[i][z′[j] * sum(mat[i-1, idx:j])]
-            end
-        end
-        return mat[t,u]
-    end
+    # @memoize function β_r(t, u)
+    #     if u >= U′ -1
+    #         return 1
+    #     end
+    #
+    #     if u < U′ - 1
+    #         return 0
+    #     end
+    #
+    #     idx = u+1
+    #     idx += z′[u] == blank || (idx < U′ && z′[u+2] == z′[u])
+    #     idx = min(idx, U′)
+    #
+    #     s = β_r(t+1, u) * ŷ[t][z′[u]]
+    #
+    #     for i=u:idx
+    #         s += β_r(t+1, i)
+    #     end
+    # end
 
     function β()
-        println("entering beta")
-        mat = gpu(zeros(T, U′))
-        mat[T,1:U′-2] = 0
+        mat = gpu(log.(zeros(T, U′)))
+        mat[T,1:U′-2] = log(0)
         for t=T:-1:1
             for u=U′:-1:1
                 if u > 2*t
-                    mat[t,u] = 0
+                    mat[t,u] = log(0)
                 elseif t == T && u >= U′ - 1
-                    mat[t,u] = 1
+                    mat[t,u] = log(1)
                 elseif t == T && u < U′ - 1
-                    mat[t,u] = 0
+                    mat[t,u] = log(0)
                 else
-                    idx = u+1
-                    idx += z′[u] == blank || (idx < U′ && z′[u+2] == z′[u])
+                    idx = u+2
+                    idx -= z′[u] == blank || (idx < U′ && z′[u+2] == z′[u])
                     idx = min(idx, U′)
-                    mat[t,u] = sum(mat[t+1,u:idx] .* ŷ[t][z′[u:idx]])
+
+                    # mat[t,u] = sum(mat[t+1,u:idx] .* ŷ[t+1][z′[u:idx]])
+
+                    prods = mat[t+1,u:idx] .+ lgŷ[t+1][z′[u:idx]]
+                    # s = prods[1]
+                    # for p in prods[2:end]
+                    #     s = logadd(s, p)
+                    # end
+                    mat[t, u] = logadd(prods)
                 end
             end
         end
         return mat
     end
 
-    function β(t, u)
-        mat = gpu(ones[T-t. U′-u])
-        for i=T:-1:t
-            for j=U′:-1:u
-                if i == T && j >= U′ - 1
-                    mat[i,j] = 1 # not necessary if we just skip this condition altogether
-                elseif j < U′ - 1
-                    mat[i,j] = 0
-                else
-                    idx = j+1
-                    idx += z′[j] == blank || z′[j+2] == z′[j]
-
-                    mat[i,j] = sum(mat[i+1,j:idx] .* ŷ[i][z′[j:idx]])
-                end
-            end
-        # since we've built this from bottom-right to upper-left, we should be
-        # okay, yes?
-        end
-        return mat[1,1]
-    end
-
-    # s = 0
-    # for t=1:length(ŷ)
-    #     s += sum([α(t,u) * β(t,u) for u in 1:U′])
-    # end
-    # s = sum([α(T,u) * β(T,u) for u in 1:U′])
     alpha = α()
     beta = β()
 
-    s = 0
-    for t=1:length(ŷ)
-        s += -log(sum(alpha[t,1:U′] .* beta[t,1:U′]))
-    end
+    # s = 0
+    # for t=1:length(ŷ)
+    #     s += -log(sum(alpha[t,1:U′] .* beta[t,1:U′]))
+    # end
 
+    s = sum(-[logadd(alpha[t,1:U′] .+ beta[t,1:U′]) for t in 1:T])
     return s
 end
