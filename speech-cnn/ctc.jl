@@ -1,5 +1,6 @@
 using Flux: gpu
 using CuArrays
+using Memoize
 
 # TODO: need to convert to log space
 # TODO: see if we need the loss to be a Tracked value
@@ -62,18 +63,55 @@ function ctc(ŷ, y)
     blank = length(ŷ[1])
 
     # ŷ = Flux.Tracker.data.(ŷ)
-    lgŷ = [log.(ŷI) for ŷI in ŷ]
+    lgŷ = [CUDAnative.log.(ŷI) for ŷI in ŷ]
     z = F(indmax.(y))
     z′ = addBlanks(z)
     T = length(ŷ)
     U′ = length(z′)
 
+    @memoize function α_r(t, u)
+
+        if t == u == 1
+            return lgŷ[t][blank]
+        end
+        
+        if t == 1 && u == 2
+            return lgŷ[t][Flux.Tracker.data(z[1])]
+        end
+        
+
+        if t == 1 && u > 2
+            return 0
+        end
+        
+        idx = u - 2
+        idx += z′[u] == blank || (u > 2 && z′[u-2] == z′[u])
+        idx = max(1, idx)
+        
+        vals = Vector()
+        
+        for n=idx:u
+            push!(vals, α_r(t-1, n))
+        end
+        
+        return lgŷ[t][Flux.Tracker.data(z′[u])] + logadd(vals)
+        
+#        return lgŷ[t][Flux.Tracker.data(z′[u])] + logadd([n -> α_r(t-1, n) for n in idx:u])
+    end
+
 
 
     function α()
-        mat = gpu(log.(zeros(T, U′)))
+        println("entering alpha")
+        mat = param(gpu(log.(zeros(T, U′))))
+        println("filling (1, 1)")
+        println(typeof(lgŷ[1][blank]))
+        println(lgŷ[1][blank])
         mat[1,1] = lgŷ[1][blank]
-        mat[1,2] = lgŷ[1][z[1]]
+        println("filling (1, 2")
+        mat[1,2] = lgŷ[1][Flux.Tracker.data(z[1])]
+
+        println("beginning alpha iterations")
 
         for t=2:T
             for u=1:U′
@@ -88,32 +126,41 @@ function ctc(ŷ, y)
                     # for n=(idx+1):u
                     #     s = logadd(s, mat[t-1, n])
                     # end
-                    mat[t,u] = lgŷ[t][z′[u]] + logadd(mat[t-1, idx:u])
+                    mat[t,u] = lgŷ[t][Flux.Tracker.data(z′[u])] + logadd(mat[t-1, idx:u])
                 end
             end
         end
         return mat
     end
 
-    # @memoize function β_r(t, u)
-    #     if u >= U′ -1
-    #         return 1
-    #     end
-    #
-    #     if u < U′ - 1
-    #         return 0
-    #     end
-    #
-    #     idx = u+1
-    #     idx += z′[u] == blank || (idx < U′ && z′[u+2] == z′[u])
-    #     idx = min(idx, U′)
-    #
-    #     s = β_r(t+1, u) * ŷ[t][z′[u]]
-    #
-    #     for i=u:idx
-    #         s += β_r(t+1, i)
-    #     end
-    # end
+    @memoize function β_r(t, u)
+        if u >= U′ -1
+            return 1
+        end
+
+        if u < U′ - 1
+            return 0
+        end
+
+        idx = u+1
+        idx += z′[u] == blank || (idx < U′ && z′[u+2] == z′[u])
+        idx = min(idx, U′)
+        
+        vals = Vector()
+        for n=u:idx
+           push!(vals, β_r(t+1, n) + lgŷ[t+1][Flux.Tracker.data(z′[n])])
+        end
+        
+        
+#        return logadd([n -> (β_r(t+1, n) + lgŷ[t+1][z′[n]]) for n in u:idx])
+        return logadd(vals)
+
+        s = β_r(t+1, u) * ŷ[t][z′[u]]
+
+        for i=u:idx
+            s += β_r(t+1, i)
+        end
+    end
 
     function β()
         mat = gpu(log.(zeros(T, U′)))
@@ -145,14 +192,32 @@ function ctc(ŷ, y)
         return mat
     end
 
-    alpha = α()
-    beta = β()
+#    alpha = α()
+#    beta = β()
 
-    # s = 0
-    # for t=1:length(ŷ)
-    #     s += -log(sum(alpha[t,1:U′] .* beta[t,1:U′]))
-    # end
 
-    s = sum(-[logadd(alpha[t,1:U′] .+ beta[t,1:U′]) for t in 1:T])
+    s = logadd([α_r(1, u) + β_r(1, u) for u in 1:U′])
+    for t=2:length(ŷ)
+        vals = [α_r(t, u) + β_r(t, u) for u in 1:U′]
+#        push!(s, logadd(vals))
+        s += logadd(vals)
+    end
+
+#    s = Vector()
+#    for t=1:length(ŷ)
+#        coeffs = Vector()
+#        for u = 1:U′
+#            push!(coeffs, α_r(t, u) + β_r(t, u))
+#        end
+##        coeffs = [u -> (α_r(t, u) + β_r(t, u)) for u in 1:U′]
+#        println("s $(typeof(s))")
+#        println("coeffs $(logadd(coeffs)) $(typeof(logadd(coeffs)))")
+#        push!(s, logadd(coeffs))
+#    end
+    
+#    s = -sum(s)
+    s = -s
+
+#    s = sum(-[logadd(alpha[t,1:U′] .+ beta[t,1:U′]) for t in 1:T])
     return s
 end

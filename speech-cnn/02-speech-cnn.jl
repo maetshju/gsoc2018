@@ -5,6 +5,8 @@ using NNlib: σ_stable
 using CuArrays
 using FileIO
 
+include("ctc.jl")
+
 const TRAINDIR = "train"
 const TESTDIR = "test"
 
@@ -55,7 +57,7 @@ function model(data)
 end
 
 function readData(data_dir)
-    fnames = [x for x in readdir(data_dir) if endswith(x, "jld")]
+    fnames = [x for x in readdir(data_dir) if endswith(x, "jld")][1:200]
 
     Xs = Vector()
     Ys = Vector()
@@ -66,7 +68,7 @@ function readData(data_dir)
         x .-= mean(x,2)
         x ./= std(x,2)
         x = reshape(x, (size(x)[1], 41, 3, 1))
-	x = gpu(x)
+	    x = gpu(x)
         y = gpu.([y[i,:] for i in 1:size(y,1)])
         push!(Xs, x)
         push!(Ys, y)
@@ -98,12 +100,16 @@ function readData(data_dir)
 end
 
 function loss(x, y)
-    m = model(x)
-    ces = Vector()
+    println("calculating loss")
+    m = softmax.(model(x))
+    l = ctc(m, y)
+    println(l)
+    println("loss: $(l)")
+    #=ces = Vector()
     for (mi, yi) in zip(m, y)
     	push!(ces, logitcrossentropy(mi, yi))
     end
-    l = sum(ces)
+    l = sum(ces)=#
     # l = sum(crossentropy.(m, y))
     #=m = model(x)
     println(y)
