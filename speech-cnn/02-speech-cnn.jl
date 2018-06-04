@@ -85,7 +85,7 @@ function readData(dataDir)
 
     for (i, fname) in enumerate(fnames)
         print(string(i) * "/" * string(length(fnames)) * "\r")
-        x, y = load(joinpath(data_dir, fname), "x", "y")
+        x, y = load(joinpath(dataDir, fname), "x", "y")
         x .-= mean(x,2)
         x ./= std(x,2)
         x = reshape(x, (size(x)[1], 41, 3, 1))
