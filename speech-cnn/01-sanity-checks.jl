@@ -5,10 +5,17 @@ using JLD
 const TRAINDIR = "train"
 const TESTDIR = "test"
 
+# Simple 64 neuron network that will perform binary classification between /sh/
+# and /eh/
 net = Chain(Dense(123, 64, relu),
             Dense(64, 1, σ),
             )
 
+"""
+    readData(data_dir)
+
+Reads in all the data files contained in `data_dir` and returns the data.
+"""
 function readData(data_dir)
     fnames = [x for x in readdir(data_dir) if endswith(x, "jld")]
 
@@ -31,34 +38,50 @@ function readData(data_dir)
             continue
         end
         x = x[idxs,:]
+
+        # Easy z-score normalization for data: (x - mean) / std
         x .-= mean(x,2)
         x ./= std(x,2)
+
         y = y[idxs,:]
+
+        # Re-cast y as 0/1 output data where /sh/ is 1 and /eh/ is 0
         y = [y[i,:] == sh ? 1 : 0 for i in 1:size(y,1)]
         x = [x[i,:] for i in 1:size(x,1)]
-        #y = [y[i,:] for i in 1:size(y,1)]
+
         push!(Xs, x)
         push!(Ys, y)
     end
     return (Xs, Ys)
 end
 
+"""
+    loss(x, y)
+
+Calculates binary cross entropy loss over an utterance of training data
+"""
 loss(x, y) = sum(binarycrossentropy.(net.(x), y))
 
-function predict(x)
-    ŷ = net(x)
-    return ŷ
-end
+"""
+    evaluateAccuracy(data)
 
+Evaluates the network's accuracy based on the observations in `data`.
+
+# Parameters
+
+- `data`: An `Array` of tuples containing utterance input (x) and label output
+    (y) pairs
+"""
 function evaluateAccuracy(data)
     correct = Vector()
     for (x, y) in data
-        ŷ = [Flux.Tracker.data(ŷ[1]) for ŷ in predict.(x)]
+        ŷ = [Flux.Tracker.data(ŷ[1]) for ŷ in net.(x)]
         ŷ = round.(Int64, ŷ)
         correct = vcat(correct,
                         [ŷ_n == y_n for (ŷ_n, y_n) in zip(ŷ, y)])
     end
-    sum(correct) / length(correct)
+    
+    return mean(correct)
 end
 
 println("reading data")

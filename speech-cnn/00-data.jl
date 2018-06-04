@@ -1,12 +1,11 @@
 using Flux: onehotbatch
 using WAV
+using JLD
 
 # This is a custom fork of MFCC for the time being, since the project hasn't
 # accepted my pull request that updated the depreacted `iceil` to `ceil`
 # https://github.com/maetshju/MFCC.jl
 using MFCC
-using JLD
-using FileIO
 
 # Define constants that will be used
 const TRAINING_DATA_DIR = "TIMIT/TRAIN"
@@ -53,7 +52,9 @@ FRAME_LENGTH = 0.025 # ms
 FRAME_INTERVAL = 0.010 # ms
 
 """
-    makeFeatures(phnFname, wavFname)
+    makeFeatures(wavFname, phnFname)
+
+Extracts Mel filterbanks and associated labels from `wavFname` and `phnFaname`.
 """
 function makeFeatures(phnFname, wavFname)
     samps, sr = wavread(wavFname)
@@ -91,43 +92,55 @@ function makeFeatures(phnFname, wavFname)
     end
 
     labelInfo = collect(zip(boundaries, labels))
-    labelInfoI = 1
-    boundary, label = labelInfo[labelInfoI]
+    labelInfoIdx = 1
+    boundary, label = labelInfo[labelInfoIdx]
     nSegments = length(labelInfo)
 
     frameLengthSamples = FRAME_LENGTH * sr
     frameIntervalSamples = FRAME_INTERVAL * sr
     halfFrameLength = FRAME_LENGTH / 2
 
-    seq = Vector()
+    # Begin generating sequence labels by looping through the acoustic
+    # sample numbers
 
-    idxsToDelete = Vector()
-    for i=1:size(fbanks)[1]
+    labelSequence = Vector() # Holds the sequence of labels
+
+    idxsToDelete = Vector() # To store indices for frames labeled as 'q'
+    for i=1:size(fbanks, 1)
         win_end = frameLengthSamples + (i-1)*frameIntervalSamples
 
-        if labelInfoI < nSegments && win_end - boundary > halfFrameLength
+        # Move on to next label if current frame of samples is more than half
+        # way into next labeled section and there are still more labels to
+        # iterate through
+        if labelInfoIdx < nSegments && win_end - boundary > halfFrameLength
 
-            labelInfoI += 1
-            boundary, label = labelInfo[labelInfoI]
+            labelInfoIdx += 1
+            boundary, label = labelInfo[labelInfoIdx]
         end
 
         if label == "q"
             push!(idxsToDelete, i)
-            continue # delete windows labeled with q, as per paper
+            continue
         end
 
-        push!(seq, label)
+        push!(labelSequence, label)
     end
 
+    # Remove the frames that were labeld as 'q'
     fbanks = fbanks[[i for i in 1:size(fbanks,1) if !(i in Set(idxsToDelete
     ))],:]
 
     fbank_deltas = deltas(fbanks)
     fbank_deltadeltas = deltas(fbank_deltas)
     features = hcat(fbanks, fbank_deltas, fbank_deltadeltas)
-    return (features, seq)
+    return (features, labelSequence)
 end
 
+"""
+    createData(data_dir, out_dir)
+
+Extracts data from files in `data_dir` and saves results in `out_dir`.
+"""
 function createData(data_dir, out_dir)
     for (root, dirs, files) in walkdir(data_dir)
 
@@ -140,15 +153,21 @@ function createData(data_dir, out_dir)
         one_dir_up = basename(root)
         println(root)
 
-        for (phnFname, wavFname) in zip(phnFnames, wavFnames)
+        for (wavFname, phnFname) in zip(wavFnames, phnFnames)
             phn_path = joinpath(root, phnFname)
             wav_path = joinpath(root, wavFname)
 
             x, y = makeFeatures(phn_path, wav_path)
 
+            # Perform label foldings
             y = [haskey(FOLDINGS, x) ? FOLDINGS[x]: x for x in y]
             y = [PHONE_TRANSLATIONS[x] for x in y]
-            class_nums = [n for n in 1:61] # but only 39 used after folding
+
+            # Generate class nums; there are 61 total classes, but only 39 are
+            # used after folding. However, because we're using connectionist
+            # temporal classification loss, we need an extra class, so we go
+            # up to 62.
+            class_nums = [n for n in 1:62]
             y = onehotbatch(y, class_nums)'
 
             base, _ = splitext(phnFname)
