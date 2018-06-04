@@ -1,5 +1,5 @@
 # using Flux: gpu
-#using CuArrays
+using CuArrays
 using Memoize
 
 function ctc(ŷ, y)
@@ -70,7 +70,7 @@ function ctc(ŷ, y)
 
     blank = length(ŷ[1])
 
-    lgŷ = [log.(ŷI) for ŷI in ŷ]
+    lgŷ = [CUDAnative.log.(ŷI) for ŷI in ŷ]
     z = F(indmax.(y))
     z′ = addBlanks(z)
     T = length(ŷ)
