@@ -3,7 +3,6 @@ using Flux: relu, crossentropy, logitcrossentropy, back!
 using NNlib: σ_stable
 #using CuArrays
 using JLD
-using EditDistance
 
 include("ctc.jl")
 
