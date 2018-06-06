@@ -143,5 +143,5 @@ function ctc(ŷ, y; gpu=true)
         push!(losses, -logsum([α(t, u) + β(t, u) for u in 1:U′]))
     end
 
-    return losses
+    return sum(losses)
 end

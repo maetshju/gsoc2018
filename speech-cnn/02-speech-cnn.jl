@@ -3,11 +3,57 @@ using Flux: relu, crossentropy, logitcrossentropy, back!
 using NNlib: σ_stable
 #using CuArrays
 using JLD
+using EditDistance
 
 include("ctc.jl")
 
 const TRAINDIR = "train"
 const TESTDIR = "test"
+
+"""
+    lev(s, t)
+
+Levenshtein distance for any iterable, not just strings. Implemented from the
+pseudocode on the Wikipedia [page for Levenshtein distance]
+(https://en.wikipedia.org/wiki/Levenshtein_distance).
+
+# Parameters
+* **s** The first iterable in the comparison; can be a string, Array, tuple,
+    etc., so long as it can be indexed
+* **t** The second iterable in the comparison; can be a string, Array, tuple,
+    etc., so long as it can be indexed
+
+# Returns
+* The calculated Levenshtein distance between `s` and `t`
+"""
+function lev(s, t)
+    m = length(s)
+    n = length(t)
+    d = Array{Int}(zeros(m+1, n+1))
+
+    for i=2:(m+1)
+        @inbounds d[i, 1] = i-1
+    end
+
+    for j=2:(n+1)
+        @inbounds d[1, j] = j-1
+    end
+
+    for j=2:(n+1)
+        for i=2:(m+1)
+            @inbounds if s[i-1] == t[j-1]
+                substitutionCost = 0
+            else
+                substitutionCost = 1
+            end
+            @inbounds d[i, j] = min(d[i-1, j] + 1, # Deletion
+                            d[i, j-1] + 1, # Insertion
+                            d[i-1, j-1] + substitutionCost) # Substitution
+        end
+    end
+
+    @inbounds return d[m+1, n+1]
+end
 
 # Convolutional section as defined in the paper
 println("building conv section")
@@ -106,16 +152,16 @@ function loss(x, y)
     m = model(x)
     l = ctc(m, y; gpu=false)
     # println(l)
-    # println("loss: $(l)")
+    println("loss: $(l)")
     l
 end
 
 """
-    evaluateAccuracy(data)
+    evaluateFrameAccuracy(data)
 
 Calculates percent of correct classifications for each input/output in `data`.
 """
-function evaluateAccuracy(data)
+function evaluateFrameAccuracy(data)
     correct = Vector()
     for (x, y) in data
         y = indmax.(y)
@@ -124,6 +170,24 @@ function evaluateAccuracy(data)
                      [ŷ_n == y_n for (ŷ_n, y_n) in zip(ŷ, y)])
     end
     sum(correct) / length(correct)
+end
+
+"""
+    evaluatePER(data)
+
+Evaluates performance by calculating phoneme error rate on `data`
+"""
+function evaluatePER(data)
+    edits = 0
+    len = 0
+    for (x, y) in data
+        y = F(indmax.(y))
+        ŷ = F(indmax.(model(x)))
+        edits += lev(y, ŷ)
+        len += length(y)
+    end
+
+    return edits / len
 end
 
 println("Gathering data")
@@ -135,16 +199,16 @@ p = params((convSection, denseSection))
 opt = ADAM(p)
 println()
 println("Training")
-# Flux.train!(loss, data, opt)
-for (x, y) in data
-    losses = loss(x, y)
-    len = length(losses)
-    for (i, l) in enumerate(losses)
-        print("$(i)/$(len)\r")
-        back!(l)
-        opt()
-    end
-    println("loss $(mean(losses))")
-end
+Flux.train!(loss, data, opt)
+# for (x, y) in data
+#     losses = loss(x, y)
+#     len = length(losses)
+#     for (i, l) in enumerate(losses)
+#         print("$(i)/$(len)\r")
+#         back!(l)
+#         opt()
+#     end
+#     println("loss $(mean(losses))")
+# end
 print("Validating\r")
-println("Validation acc. $(evaluateAccuracy(valData))")
+println("Validation acc. $(evaluatePER(valData))")
