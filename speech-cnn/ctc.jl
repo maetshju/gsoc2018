@@ -1,21 +1,18 @@
-# using Flux: gpu
-using CuArrays
+using Flux: gpu
 using Memoize
 
-function ctc(ŷ, y)
+function ctc(ŷ, y; gpu=true)
 
     """
         logadd(a, b)
 
     Adds log-space `a` and `b` such that the result equals `log(exp(a)+exp(b))`
-
-    Currently, it relies on the fact that `exp(-Inf)` is 0 to handle when `a` or
-    `b`  is 0s, which is less than ideal because that behavior of `log(0)` that
-    produced the ``-Inf` value may not always be defined as such.
     """
     function logadd(a, b)
-        if isinf(a) || isinf(b)
-            return log(exp(a) + exp(b))
+        if isinf(a)
+            return b
+        elseif isinf(b)
+            return a
         end
         return a + log(1+exp(b-a))
     end
@@ -70,7 +67,12 @@ function ctc(ŷ, y)
 
     blank = length(ŷ[1])
 
-    lgŷ = [CUDAnative.log.(ŷI) for ŷI in ŷ]
+    local lgŷ
+    if gpu
+        lgŷ = [CUDAnative.log.(ŷI) for ŷI in ŷ]
+    else
+        lgŷ = [log.(ŷI) for ŷI in ŷ]
+    end
     z = F(indmax.(y))
     z′ = addBlanks(z)
     T = length(ŷ)
@@ -135,11 +137,11 @@ function ctc(ŷ, y)
         return logsum(vals)
     end
 
-    s = logsum([α(1, u) + β(1, u) for u in 1:U′])
-    for t=2:length(ŷ)
-        s += logsum([α(t, u) + β(t, u) for u in 1:U′])
+    # s = logsum([α(1, u) + β(1, u) for u in 1:U′])
+    losses = Vector()
+    for t=1:length(ŷ)
+        push!(losses, -logsum([α(t, u) + β(t, u) for u in 1:U′]))
     end
 
-    s = -s
-    return s
+    return losses
 end

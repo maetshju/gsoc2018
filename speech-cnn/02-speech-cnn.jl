@@ -1,9 +1,8 @@
 using Flux
-using Flux: relu, crossentropy, logitcrossentropy
-using Flux: binarycrossentropy
+using Flux: relu, crossentropy, logitcrossentropy, back!
 using NNlib: σ_stable
-using CuArrays
-using FileIO
+#using CuArrays
+using JLD
 
 include("ctc.jl")
 
@@ -105,9 +104,9 @@ Caclulates the connectionist temporal classification loss for `x` and `y`.
 function loss(x, y)
     println("calculating loss")
     m = model(x)
-    l = ctc(m, y)
-    println(l)
-    println("loss: $(l)")
+    l = ctc(m, y; gpu=false)
+    # println(l)
+    # println("loss: $(l)")
     l
 end
 
@@ -136,6 +135,16 @@ p = params((convSection, denseSection))
 opt = ADAM(p)
 println()
 println("Training")
-Flux.train!(loss, data, opt)
+# Flux.train!(loss, data, opt)
+for (x, y) in data
+    losses = loss(x, y)
+    len = length(losses)
+    for (i, l) in enumerate(losses)
+        print("$(i)/$(len)\r")
+        back!(l)
+        opt()
+    end
+    println("loss $(mean(losses))")
+end
 print("Validating\r")
 println("Validation acc. $(evaluateAccuracy(valData))")
