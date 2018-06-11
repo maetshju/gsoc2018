@@ -1,7 +1,9 @@
 using Flux: gpu
 using Memoize
 
-function ctc(ŷ, y; gpu=true)
+#EPS = 1e-7
+
+function ctc(ŷ, y; gpu=true, eps=true)
 
     """
         logadd(a, b)
@@ -14,6 +16,9 @@ function ctc(ŷ, y; gpu=true)
         elseif isinf(b)
             return a
         end
+	if isnan(a) || isnan(b)
+	    println("NAN HAPPENED IN LOGADD")
+	end
         return a + log(1+exp(b-a))
     end
 
@@ -27,6 +32,9 @@ function ctc(ŷ, y; gpu=true)
         s = a[1]
         for item in a[2:end]
             s = logadd(s, item)
+	    if isnan(s)
+    	        println("NANS HAVE ENTERED")
+            end
         end
         return s
     end
@@ -67,12 +75,20 @@ function ctc(ŷ, y; gpu=true)
 
     blank = length(ŷ[1])
 
+    #println(ŷ )
+
+    if eps
+        ŷ  = [yI .+ EPS for yI in ŷ ]
+    end
+    #println(ŷ[1])
+
     local lgŷ
     if gpu
         lgŷ = [CUDAnative.log.(ŷI) for ŷI in ŷ]
     else
         lgŷ = [log.(ŷI) for ŷI in ŷ]
     end
+    #println(lgŷ )
     z = F(indmax.(y))
     z′ = addBlanks(z)
     T = length(ŷ)
@@ -106,6 +122,13 @@ function ctc(ŷ, y; gpu=true)
         idx = max(1, idx)
 
         vals = [α(t-1, i) for i=idx:u]
+	if any(isnan.(vals))
+	    println("NANS IN BETA ($(t), $(u))")
+        end
+
+	if any(isnan.(vals))
+	    println("NANS IN ALPHA ($(t), $(u))")
+	end
 
         return lgŷ[t][Flux.Tracker.data(z′[u])] + logsum(vals)
     end
@@ -133,6 +156,9 @@ function ctc(ŷ, y; gpu=true)
         idx = min(idx, U′)
 
         vals = [β(t+1, i) + lgŷ[t+1][Flux.Tracker.data(z′[i])] for i=u:idx]
+	if any(isnan.(vals))
+	    println("NANS IN BETA ($(t), $(u))")
+	end
 
         return logsum(vals)
     end
@@ -140,8 +166,14 @@ function ctc(ŷ, y; gpu=true)
     # s = logsum([α(1, u) + β(1, u) for u in 1:U′])
     losses = Vector()
     for t=1:length(ŷ)
-        push!(losses, -logsum([α(t, u) + β(t, u) for u in 1:U′]))
+        v = [α(t, u) + β(t, u) for u in 1:U′]
+	#println(v)
+        l = -logsum(v)
+	#println(l)
+        push!(losses, l)
     end
 
     return sum(losses)
+    #return mean(losses)
+    #return losses
 end

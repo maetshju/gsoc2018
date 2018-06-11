@@ -1,13 +1,27 @@
 using Flux
 using Flux: relu, crossentropy, logitcrossentropy, back!
 using NNlib: σ_stable
-#using CuArrays
+using CuArrays
 using JLD
 
 include("ctc.jl")
 
 const TRAINDIR = "train"
 const TESTDIR = "test"
+const EPS = 1e-7
+
+function F(A, blank)
+    seq = [A[1]]
+    for a in A[2:end]
+        if seq[end] != a && a != blank
+            push!(seq, a)
+        end
+    end
+    if seq == [blank]
+        seq = []
+    end
+    return seq
+end
 
 """
     lev(s, t)
@@ -87,8 +101,9 @@ println("Building dense section")
 denseSection = Chain(Dense(3328, 1024, relu),
                      Dense(1024, 1024, relu),
                      Dense(1024, 1024, relu),
-                     Dense(1024, 61, identity),
-                     softmax) |> gpu
+                     Dense(1024, 62, identity),
+                     #softmax) |> gpu
+                     ) |> gpu
 
 """
     model(x)
@@ -107,12 +122,16 @@ at each timestep.
 """
 function model(x)
     afterConv = convSection(x)
+    #println("afterconv $(afterConv)")
     dims = size(afterConv)
     afterConv = reshape(afterConv, (dims[1], prod(dims[2:end])))
     ŷ = Vector()
     for i in 1:size(afterConv)[1]
         push!(ŷ, denseSection(afterConv[i,:]))
     end
+    #ŷ  = [yI .+ EPS for yI in ŷ ]
+    ŷ  = [softmax(yI - maximum(yI)) for yI in ŷ ]
+    #ŷ  = softmax.(ŷ )
     return ŷ
 end
 
@@ -122,7 +141,7 @@ end
 Reads in each jld file contained in `dataDir` and normalizes the data.
 """
 function readData(dataDir)
-    fnames = [x for x in readdir(dataDir) if endswith(x, "jld")][1:200]
+    fnames = [x for x in readdir(dataDir) if endswith(x, "jld")]
 
     Xs = Vector()
     Ys = Vector()
@@ -149,9 +168,9 @@ Caclulates the connectionist temporal classification loss for `x` and `y`.
 function loss(x, y)
     println("calculating loss")
     m = model(x)
-    l = ctc(m, y; gpu=false)
+    l = ctc(m, y; gpu=true, eps=true)
     # println(l)
-    println("loss: $(l)")
+    println("mean loss: $(l/length(y))")
     l
 end
 
@@ -180,15 +199,19 @@ function evaluatePER(data)
     edits = 0
     len = 0
     for (x, y) in data
-        y = F(indmax.(y))
-        ŷ = F(indmax.(model(x)))
-        edits += lev(y, ŷ)
+        y = F(indmax.(y), 62)
+        ŷ = F(indmax.(model(x)), 62)
+        e = lev(y, ŷ)
+	# println("y $(y)")
+	# println("ŷ  $(ŷ )")
+        edits += e
         len += length(y)
     end
 
     return edits / len
 end
 
+function main()
 println("Gathering data")
 Xs, Ys = readData(TRAINDIR)
 data = collect(zip(Xs, Ys))
@@ -199,15 +222,18 @@ opt = ADAM(p)
 println()
 println("Training")
 Flux.train!(loss, data, opt)
-# for (x, y) in data
-#     losses = loss(x, y)
-#     len = length(losses)
-#     for (i, l) in enumerate(losses)
-#         print("$(i)/$(len)\r")
-#         back!(l)
-#         opt()
-#     end
-#     println("loss $(mean(losses))")
-# end
+#=for (x, y) in data
+    losses = loss(x, y)
+    len = length(losses)
+    for (i, l) in enumerate(losses)
+        print("$(i)/$(len)\r")
+        back!(l)
+        opt()
+    end
+    println("loss $(mean(losses))")
+end=#
 print("Validating\r")
 println("Validation acc. $(evaluatePER(valData))")
+end
+
+main()
