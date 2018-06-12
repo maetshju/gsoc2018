@@ -9,6 +9,7 @@ include("ctc.jl")
 const TRAINDIR = "train"
 const TESTDIR = "test"
 const EPS = 1e-7
+const BATCHSIZE = 2
 
 function F(A, blank)
     seq = [A[1]]
@@ -157,6 +158,22 @@ function readData(dataDir)
         push!(Xs, x)
         push!(Ys, y)
     end
+
+    batchedXs = Vector()
+    batchedYs = Vector()
+
+    lXs = length(Xs)
+
+    for i=1:ceil(Int64, length(Xs)/BATCHSIZE)
+        startI = (i-1) * BATCHSIZE + 1
+        lastI = min(lXs, i*BATCHSIZE)
+
+        push!(batchedXs, Xs[startI:lastI])
+        push!(batchedYs, Ys[startI:lastI])
+    end
+
+    # Xs = [Xs[((i-1)*BATCHSIZE+1):min(length(Xs),i*BATCHSIZE)] for i in 1:ceil(Int64, length(Xs)/BATCHSIZE)]
+    # Ys = [Ys[((i-1)*BATCHSIZE+1):min(length(Ys),i*BATCHSIZE)] for i in 1:ceil(Int64, length(Ys)/BATCHSIZE)]
     return (Xs, Ys)
 end
 
@@ -167,11 +184,12 @@ Caclulates the connectionist temporal classification loss for `x` and `y`.
 """
 function loss(x, y)
     println("calculating loss")
-    m = model(x)
-    l = ctc(m, y; gpu=true, eps=true)
+    ms = model.(x)
+    ls = ctc.(ms, y; gpu=true, eps=true)
     # println(l)
-    println("mean loss: $(l/min(50, length(y)))")
-    l
+    #println("mean loss: $(l/min(50, length(y)))")
+    println("mean loss: $(mean(ls))")
+    mean(ls)
 end
 
 """
