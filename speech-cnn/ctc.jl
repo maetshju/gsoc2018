@@ -173,6 +173,8 @@ function ctc(ŷ, y; gpu=true, eps=true)
         push!(losses, l)
     end
 
+    return sum(losses[end:-1:max(end-50,1)])
+
     return sum(losses)
     #return mean(losses)
     #return losses

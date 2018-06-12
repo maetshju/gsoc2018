@@ -1,6 +1,6 @@
 using Flux
 using Flux: relu, crossentropy, logitcrossentropy, back!
-using NNlib: σ_stable
+using NNlib: σ_stable, logsoftmax
 using CuArrays
 using JLD
 
@@ -170,7 +170,7 @@ function loss(x, y)
     m = model(x)
     l = ctc(m, y; gpu=true, eps=true)
     # println(l)
-    println("mean loss: $(l/length(y))")
+    println("mean loss: $(l/min(50, length(y)))")
     l
 end
 
