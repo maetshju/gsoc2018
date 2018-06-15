@@ -173,6 +173,30 @@ function ctc(ŷ, y; gpu=true, eps=true)
         return logsum(vals)
     end
 
+    alpha = [(1,u) for u in 1:U′]
+
+    for t=1:T
+        for u=1:U′
+            alpha = hcat(alpha [(t,u) for u in 1:U′])
+        end
+    end
+
+    alpha = gpu(alpha)
+    beta = deepcopy(alpha)
+
+    alpha = map(a -> α(a[1], a[2]), alpha)
+    beta = map(b -> β(b[1], b[2]), beta)
+
+    losses = Vector()
+    for t=1:T
+        v = [alpha[t,u] + beta[t,u] for u in 1:U′]
+        push!(losses, -logsum(v))
+    end
+
+    return sum(losses)
+
+
+
     # s = logsum([α(1, u) + β(1, u) for u in 1:U′])
     losses = Vector()
     println(size(ŷ ,2))
