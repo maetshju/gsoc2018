@@ -73,26 +73,34 @@ function ctc(ŷ, y; gpu=true, eps=true)
         return z′
     end
 
-    blank = length(ŷ[1])
+    blank = size(ŷ[1], 1)
 
-    #println(ŷ )
+    println(typeof(ŷ ))
+    println(size(ŷ ))
+    println(typeof(y))
+    println(typeof(y))
 
     if eps
-        ŷ  = [yI .+ EPS for yI in ŷ ]
+        #ŷ  = [yI .+ EPS for yI in ŷ ]
+	ŷ  += EPS
     end
     #println(ŷ[1])
 
+    println(typeof(ŷ ))
     local lgŷ
-    if gpu
+    #=if gpu
         lgŷ = [CUDAnative.log.(ŷI) for ŷI in ŷ]
     else
         lgŷ = [log.(ŷI) for ŷI in ŷ]
-    end
+    end=#
+    lgŷ  = CUDAnative.log.(ŷ )'
+    println(size(lgŷ ))
     #println(lgŷ )
-    z = F(indmax.(y))
+    z = F(indmax.([y[i,:] for i=1:size(y,1)]))
     z′ = addBlanks(z)
-    T = length(ŷ)
+    T = size(ŷ, 2)
     U′ = length(z′)
+    println( U′)
 
     """
         α(t, u)
@@ -102,11 +110,11 @@ function ctc(ŷ, y; gpu=true, eps=true)
     @memoize function α(t, u)
 
         if t == u == 1
-            return lgŷ[t][blank]
+            return lgŷ[t, blank]
         end
 
         if t == 1 && u == 2
-            return lgŷ[t][Flux.Tracker.data(z[1])]
+            return lgŷ[t, Flux.Tracker.data(z[1])]
         end
 
         if t == 1 && u > 2
@@ -121,7 +129,8 @@ function ctc(ŷ, y; gpu=true, eps=true)
         idx += z′[u] == blank || (u > 2 && z′[u-2] == z′[u])
         idx = max(1, idx)
 
-        vals = [α(t-1, i) for i=idx:u]
+        #vals = [α(t-1, i) for i=idx:u]
+	vals = α.(t-1, idx:u)
 	if any(isnan.(vals))
 	    println("NANS IN BETA ($(t), $(u))")
         end
@@ -130,7 +139,7 @@ function ctc(ŷ, y; gpu=true, eps=true)
 	    println("NANS IN ALPHA ($(t), $(u))")
 	end
 
-        return lgŷ[t][Flux.Tracker.data(z′[u])] + logsum(vals)
+        return lgŷ[t, Flux.Tracker.data(z′[u])] + logsum(vals)
     end
 
     """
@@ -139,6 +148,7 @@ function ctc(ŷ, y; gpu=true, eps=true)
     Calculates the β coefficient at time `t` and label `u`
     """
     @memoize function β(t, u)
+
         if t == T && u >= U′ -1
             return log(1)
         end
@@ -155,7 +165,7 @@ function ctc(ŷ, y; gpu=true, eps=true)
         idx -= z′[u] == blank || (idx < U′ && z′[u+2] == z′[u])
         idx = min(idx, U′)
 
-        vals = [β(t+1, i) + lgŷ[t+1][Flux.Tracker.data(z′[i])] for i=u:idx]
+        vals = [β(t+1, i) + lgŷ[t+1, Flux.Tracker.data(z′[i])] for i=u:idx]
 	if any(isnan.(vals))
 	    println("NANS IN BETA ($(t), $(u))")
 	end
@@ -165,7 +175,8 @@ function ctc(ŷ, y; gpu=true, eps=true)
 
     # s = logsum([α(1, u) + β(1, u) for u in 1:U′])
     losses = Vector()
-    for t=1:length(ŷ)
+    println(size(ŷ ,2))
+    for t=T:-1:1
         v = [α(t, u) + β(t, u) for u in 1:U′]
 	#println(v)
         l = -logsum(v)
@@ -173,7 +184,7 @@ function ctc(ŷ, y; gpu=true, eps=true)
         push!(losses, l)
     end
 
-    return sum(losses[end:-1:max(end-50,1)])
+    #return sum(losses[end:-1:max(end-50,1)])
 
     return sum(losses)
     #return mean(losses)

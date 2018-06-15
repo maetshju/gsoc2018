@@ -9,7 +9,7 @@ include("ctc.jl")
 const TRAINDIR = "train"
 const TESTDIR = "test"
 const EPS = 1e-7
-const BATCHSIZE = 2
+const BATCHSIZE = 20
 
 function F(A, blank)
     seq = [A[1]]
@@ -127,13 +127,22 @@ function model(x)
     dims = size(afterConv)
     afterConv = reshape(afterConv, (dims[1], prod(dims[2:end])))
     ŷ = Vector()
-    for i in 1:size(afterConv)[1]
-        push!(ŷ, denseSection(afterConv[i,:]))
+    # ŷ  = gpu(zeros(size(afterConv, 1), 62))
+    ŷ  = softmax(denseSection(afterConv[1,:]))
+    for i in 2:size(afterConv, 1)
+        # push!(ŷ, softmax(denseSection(afterConv[i,:])))
+	# ŷ[i,:] = softmax(denseSection(afterConv[i,:]))
+	ŷ  = hcat(ŷ ,softmax(denseSection(afterConv[i,:])))
     end
     #ŷ  = [yI .+ EPS for yI in ŷ ]
-    ŷ  = [softmax(yI - maximum(yI)) for yI in ŷ ]
+    #ŷ  = [softmax(yI - maximum(yI)) for yI in ŷ ]
     #ŷ  = softmax.(ŷ )
-    return ŷ
+    #ŷ  = collect(Iterators.flatten(ŷ ))
+    #ŷ  = gpu(hcat(ŷ))
+    ŷ  = gpu(ŷ )
+    return ŷ 
+    #return gpu(collect(Iterators.flatten(ŷ)))
+    #return ŷ 
 end
 
 """
@@ -142,7 +151,7 @@ end
 Reads in each jld file contained in `dataDir` and normalizes the data.
 """
 function readData(dataDir)
-    fnames = [x for x in readdir(dataDir) if endswith(x, "jld")]
+    fnames = [x for x in readdir(dataDir) if endswith(x, "jld")][1:400]
 
     Xs = Vector()
     Ys = Vector()
@@ -154,17 +163,21 @@ function readData(dataDir)
         x ./= std(x,2)
         x = reshape(x, (size(x)[1], 41, 3, 1))
 	    x = gpu(x)
-        y = gpu.([y[i,:] for i in 1:size(y,1)])
+        #y = gpu.([y[i,:] for i in 1:size(y,1)])
+	y = gpu(y)
         push!(Xs, x)
         push!(Ys, y)
     end
 
-    batchedXs = Vector()
-    batchedYs = Vector()
+    batchedXs = Xs[1:BATCHSIZE]
+    batchedYs = Ys[1:BATCHSIZE]
+
+    println("tbx: $(typeof(batchedXs))")
+    println("txs: $(typeof(Xs))")
 
     lXs = length(Xs)
 
-    for i=1:ceil(Int64, length(Xs)/BATCHSIZE)
+    for i=2:ceil(Int64, length(Xs)/BATCHSIZE)
         startI = (i-1) * BATCHSIZE + 1
         lastI = min(lXs, i*BATCHSIZE)
 
@@ -174,7 +187,8 @@ function readData(dataDir)
 
     # Xs = [Xs[((i-1)*BATCHSIZE+1):min(length(Xs),i*BATCHSIZE)] for i in 1:ceil(Int64, length(Xs)/BATCHSIZE)]
     # Ys = [Ys[((i-1)*BATCHSIZE+1):min(length(Ys),i*BATCHSIZE)] for i in 1:ceil(Int64, length(Ys)/BATCHSIZE)]
-    return (Xs, Ys)
+    # return (Xs, Ys)
+    return (batchedXs, batchedYs)
 end
 
 """
@@ -186,6 +200,10 @@ function loss(x, y)
     println("calculating loss")
     ms = model.(x)
     ls = ctc.(ms, y; gpu=true, eps=true)
+    #=ls = Vector()
+    for (m, yI) in zip(ms, y)
+        push!(ls, ctc(m, yI; gpu=true, eps=true))
+    end=#
     # println(l)
     #println("mean loss: $(l/min(50, length(y)))")
     println("mean loss: $(mean(ls))")
@@ -233,8 +251,10 @@ function main()
 println("Gathering data")
 Xs, Ys = readData(TRAINDIR)
 data = collect(zip(Xs, Ys))
-valData = data[1:189]
-data = data[190:end]
+#valData = data[1:189]
+valData = data[1:10] # this when each item is a batch of 20
+#data = data[190:end]
+data = data[21:end] # batch size = 20
 p = params((convSection, denseSection))
 opt = ADAM(p)
 println()
