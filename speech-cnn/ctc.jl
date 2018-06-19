@@ -1,5 +1,7 @@
 using Flux: gpu
+using CUDAnative
 using Memoize
+include("shareddict.jl")
 
 #EPS = 1e-7
 
@@ -10,7 +12,7 @@ function ctc(ŷ, y; gpu=true, eps=true)
 
     Adds log-space `a` and `b` such that the result equals `log(exp(a)+exp(b))`
     """
-    function logadd(a, b)
+        function logadd(a, b)
         if isinf(a)
             return b
         elseif isinf(b)
@@ -19,8 +21,20 @@ function ctc(ŷ, y; gpu=true, eps=true)
 	if isnan(a) || isnan(b)
 	    println("NAN HAPPENED IN LOGADD")
 	end
-        return a + log(1+exp(b-a))
+        a = a + log(1+exp(b-a))
+        return nothing
     end
+#     function logadd(a, b)
+#         if isinf(a)
+#             return b
+#         elseif isinf(b)
+#             return a
+#         end
+# 	if isnan(a) || isnan(b)
+# 	    println("NAN HAPPENED IN LOGADD")
+# 	end
+#         return a + log(1+exp(b-a))
+#     end
 
     """
         logsum(a)
@@ -37,6 +51,14 @@ function ctc(ŷ, y; gpu=true, eps=true)
             end
         end
         return s
+    end
+    
+    function logsum(a, s)
+        s = a[1]
+        for item in a[2:end]
+            logadd(s, item)
+        end
+        return nothing
     end
 
     """
@@ -93,7 +115,8 @@ function ctc(ŷ, y; gpu=true, eps=true)
     else
         lgŷ = [log.(ŷI) for ŷI in ŷ]
     end=#
-    lgŷ  = CUDAnative.log.(ŷ )'
+    lgŷ  = Flux.gpu(CUDAnative.log.(ŷ )')
+    println("lgyhat type $(typeof(lgŷ ))")
     println(size(lgŷ ))
     #println(lgŷ )
     z = F(indmax.([y[i,:] for i=1:size(y,1)]))
@@ -101,45 +124,57 @@ function ctc(ŷ, y; gpu=true, eps=true)
     T = size(ŷ, 2)
     U′ = length(z′)
     println( U′)
+    
+#     alphas = Dict{Tuple{Int64,Int64},Flux.Tracker.TrackedReal}()
 
     """
         α(t, u)
 
     Calculates the α coefficient for time `t` and label `u`
     """
-    @memoize function α(t, u)
+    
+    function α(t, u, alpha)
+    
+        if haskey(alphas, (t,u))
+           return alphas[(t,u)]
+        end
+        
+        local v
 
         if t == u == 1
-            return lgŷ[t, blank]
+            v = lgŷ[t, blank]
+#             return lgŷ[t, blank]
+
+        elseif t == 1 && u == 2
+            v = lgŷ[t, Flux.Tracker.data(z[1])]
+#             return lgŷ[t, Flux.Tracker.data(z[1])]
+
+        elseif t == 1 && u > 2
+            v = Flux.Tracker.TrackedReal(Float32(log(0)))
+#             return Flux.Tracker.TrackedReal(Float32(log(0)))
+
+        elseif u < U′ - 2(T - t) - 1
+            v = Flux.Tracker.TrackedReal(Float32(log(0)))
+#             return Flux.Tracker.TrackedReal(Float32(log(0)))
+
+        else
+            v = Vector()
+            idx = u - 2
+            idx += z′[u] == blank || (u > 2 && z′[u-2] == z′[u])
+            idx = max(1, idx)
+            
+            for i=idx:u
+                var = Flux.Tracker.TrackedReal(0)
+                @cuda (1,1) α(t-1, i, var)
+                push!(v, var)
+            end
+            
+            @cuda (1,1) logsum(v, loggedsum)
+            v = lgŷ[t, Flux.Tracker.data(z′[u])] + v
         end
 
-        if t == 1 && u == 2
-            return lgŷ[t, Flux.Tracker.data(z[1])]
-        end
-
-        if t == 1 && u > 2
-            return log(0)
-        end
-
-        if u < U′ - 2(T - t) - 1
-            return log(0)
-        end
-
-        idx = u - 2
-        idx += z′[u] == blank || (u > 2 && z′[u-2] == z′[u])
-        idx = max(1, idx)
-
-        #vals = [α(t-1, i) for i=idx:u]
-	vals = α.(t-1, idx:u)
-	if any(isnan.(vals))
-	    println("NANS IN BETA ($(t), $(u))")
-        end
-
-	if any(isnan.(vals))
-	    println("NANS IN ALPHA ($(t), $(u))")
-	end
-
-        return lgŷ[t, Flux.Tracker.data(z′[u])] + logsum(vals)
+        parInsert(alphas, (t,u), v)
+        return nothing
     end
 
     """
@@ -147,18 +182,18 @@ function ctc(ŷ, y; gpu=true, eps=true)
 
     Calculates the β coefficient at time `t` and label `u`
     """
-    @memoize function β(t, u)
+    @memoize Dict function β(t, u)
 
         if t == T && u >= U′ -1
-            return log(1)
+            return Flux.Tracker.TrackedReal(Float32(log(1)))
         end
 
         if t == T && u < U′ - 1
-            return log(0)
+            return Flux.Tracker.TrackedReal(Float32(log(0)))
         end
 
         if u > 2t || u > U′ + 1
-            return log(0)
+            return Fux.Tracker.TrackedReal(Float32(log(0)))
         end
 
         idx = u+2
@@ -172,30 +207,92 @@ function ctc(ŷ, y; gpu=true, eps=true)
 
         return logsum(vals)
     end
-
-    alpha = [(1,u) for u in 1:U′]
-
-    for t=1:T
-        for u=1:U′
-            alpha = hcat(alpha [(t,u) for u in 1:U′])
-        end
+    
+#     function alphaiter(alphas)
+#         alphas[1,1] = lgŷ[1, blank]
+#         alphas[1,2] = lgŷ[1, Flux.Tracker.data(z[1])]
+#         for t=2:T
+#             for u=1:U′
+#                 idx = u-2
+#                 idx += z′[u] == blank || (u > 2 && z′[u-2] == z′[u])
+#                 idx = max(1, idx)
+#                 
+#                 alphas[t,u] = lgŷ[t, Flux.Tracker.data(z′[u])] + logsum(alphas[t-1, idx:u])
+#             end
+#         end
+#         return nothing
+#     end
+#     
+#     function alphaiter2(alphas)
+#         i = (blockIdx().x-1) * blockDim().x + threadIdx().x
+#         t = floor(Int, i / size(alphas, 1)) + 1
+#         u = i % size(alphas, 1)
+#         
+#         if t == u == 1
+#             alphas[t,u] = lgŷ[1, blank]
+#         elseif t == 1 && u == 2
+#             alphas[t,u] = lgŷ[1, Flux.Tracker.data(z[1])]
+#         else
+#             idx = u-2
+#             idx += z′[u] == blank || (u > 2 && z′[u-2] == z′[u])
+#             idx = max(1, idx)
+#             
+#             alphas[t,u] = lgŷ[t, Flux.Tracker.data(z′[u])] + logsum(alphas[t-1, idx:u])
+#         end
+#         
+#         return nothing
+#     end
+    
+    function onealpha(t, u, prevt)
+        idx = u-2
+        idx += z′[u] == blank || (u > 2 && z′[u-2] == z′[u])
+        idx = max(1, idx)
+        return lgŷ[t, Flux.Tracker.data(z′[u])] + logsum(prevt[idx:u])
     end
+    
+    println("Beginning alphas")
+    alphas = Flux.gpu([Flux.Tracker.TrackedReal(-Inf) for x in 1:T])
+    alphas[1,1] = lgŷ[1, blank]
+    alphas[1,2] = lgŷ[1, Flux.Tracker.data(z[1])]
+    for t=2:T
+#         prev = repeat(alphas[t-1,:], outer=U′)
+        prev = alphas[t-1,:]
+        alphas = vcat(alphas, map(x -> onealpha(t, x, prev)))
+#         alphas = vcat(alphas, onealpha.(enumerate(prev)...))
+    end
+    println("Alphas done")
+    
+#     karr = Flux.gpu(SharedArray([(0, 0) for x in 1:2^26]))
+#     varr = Flux.gpu(SharedArray([0.0 for x in 1:2^26]))
+#     karr = Flux.gpu([(0, 0) for x in 1:2^26])
+#     varr = Flux.gpu([0.0 for x in 1:2^26])
+#     alphas = SharedDict(karr, varr, (0,0), 0.0)
+    
+    # TODO: make alpha use the parallel hash table for memoization
 
-    alpha = gpu(alpha)
-    beta = deepcopy(alpha)
+    println("beginning alphas")
+#     a = Flux.Tracker.TrackedReal(0)
+#     @cuda (1,12) α(T, U′, a)
+#     mat = Flux.gpu(Flux.Tracker.TrackedReal.Float32.((log.(zeros(T, U′)))))
+    mat = similar(ŷ)
+    println(typeof(mat))
+#     mat = Flux.gpu(Matrix{Flux.Tracker.TrackedReal}(T, U′))
+    @cuda (1,12) alphaiter(mat)
+    println("alphas done")
+    println("a $(mat[1,1])")
+    map(b -> β(b[1], b[2]), beta)
 
-    alpha = map(a -> α(a[1], a[2]), alpha)
-    beta = map(b -> β(b[1], b[2]), beta)
-
-    losses = Vector()
+    #=losses = Vector()
     for t=1:T
         v = [alpha[t,u] + beta[t,u] for u in 1:U′]
         push!(losses, -logsum(v))
     end
 
-    return sum(losses)
+    return sum(losses)=#
 
+    println("mapping done")
 
+    # TODO: Make alpha and beta type stable
 
     # s = logsum([α(1, u) + β(1, u) for u in 1:U′])
     losses = Vector()
