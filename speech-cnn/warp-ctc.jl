@@ -3,6 +3,7 @@
 # paper: https://arxiv.org/pdf/1512.02595.pdf
 
 using Flux
+using CUDAnative, CUDAdrv
 
 function log_plus_f(p1, p2)
     if isinf(p1)
@@ -16,7 +17,7 @@ function log_plus_f(p1, p2)
     return p1 + log(1+exp(p2 - p1))
 end
 
-function F(A)
+function F(A, blank)
     prev = A[1]
     z = [prev]
     for curr in A[2:end]
@@ -39,49 +40,47 @@ function countRepeats(A)
 end
 
 function computeAlphaKernel(probs, labelSize, uttLength, repeatsInLabel,
-                            labelsWithoutBlanks, labelsWithBlanks, alphas,
-                            nllForward, blankLabel)
+                            labelsWithoutBlanks, labelsWithBlanks, alpha, nllForward, blankLabel, ninf)
 
 
-    const tid = threadIdx().x
-    const L = labelSize
-    const T = uttLength
-    const S = 2*L + 1
-    const prob_offset = out_dim
-    const repeats = repeatsInLabel
-
-    # TODO: What in the world is this?
-    const NV = NT * VT
-
+    
+    tid = threadIdx().x
+    L = labelSize
+    T = uttLength
+    S = 2*L + 1
+# #     const prob_offset = out_dim
+    repeats = repeatsInLabel
+# 
+#     # TODO: What in the world is this?
+# #     const NV = NT * VT
+# 
     if L + repeats > T
         return nothing
     end
-
-    # add blanks to labels
-    labelsWithBlanks = [blank]
-    for label in labelsWithoutBlanks
-        push!(labelsWithBlanks, label)
-        push!(labelsWithBlanks, blankLabel)
-    end
+# 
+#     
 
     ## TODO: May need to add the final if(tid==0) portion
 
     labels = labelsWithBlanks
-
-    for idx=tid:blockdim().x:S
-        alpha[idx] = -Inf
-    end
-
-    ## TODO: load labels into shared memory
-
+    
+    ## Shouldn't be necessary because alpha was already initialized with -Inf32
+#     for idx=tid:blockDim().x:S
+#         alpha[idx] = ninf
+#     end
+# 
+#     ## TODO: load labels into shared memory
+# 
     sync_threads()
     start = (L + repeats < T) ? 0 : 1
     last = S > 1 ? 2 : 1
 
-    for i=tid:blockDim().x:(last-start)
-        alpha[i + start] = log(probs(prob_offset + label[i+start]))
+    i = tid
+    while i <= (last - start)
+        alpha[i + start] = log(probs[labels[i+start]])
+        i += blockDim().x
     end
-
+    
     sync_threads()
 
     for t=2:T
@@ -100,42 +99,155 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeatsInLabel,
 
         sync_threads()
 
-        for idx=(tid+1):blockDim().x:(S-1)
+        idx = tid+1
+        while idx <= S-1
+#         for idx=(tid+1):blockDim().x:(S-1)
             prevSum = log_plus_f(alpha[idx + startPrevRow], alpha[(idx-1) + startPrevRow])
+            
+            if labels[idx] != blankLabel && idx != 1 && labels[idx] != labels[idx-2]
 
-            if label[idx] != blankLabel && idx != 1 && label[idx] != label[idx-2]
-                prevSum = log_plus_f(prev_sum, alpha[(idx-2) + startPrevRow])
-                alpha[idx + startCurrRow] = prevSum + log(probs[prob_offset + startProbCol + label[idx]])
+                prevSum = log_plus_f(prevSum, alpha[(idx-2) + startPrevRow])
+                alpha[idx + startCurrRow] = prevSum + log(probs[startProbCol + labels[idx]])
+                
             end
+            idx += blockDim().x
         end
 
         sync_threads()
 
         if tid == 0
-            loglike = -Inf
+            loglike = -Inf32
             val = 2*(L-1) + 1 - (L + repeats == T ? 1 : 0)
 
             start = val * (L != 0) + start
             last = val * (L != 0) + last
-
-            for i=start:last
+ 
+             for i=start:last
                 loglike = log_plus_f(loglike, alpha[i + (T-1) * S])
-            end
+             end
+             nllForward[blockIdx().x] = -loglike
         end
+        
+    end
 
-        nllForward[blockIdx().x] = -loglike
+    return nothing
+end
+
+function computeBetasAndGradKernel(probs, labelSize, uttLength,
+                                    repeatsInLabel, labelsWithBlanks,
+                                    alphas, nllForward, nllBackward,
+                                    grad, blankLabel, ninf)
+                                    
+    tid = threadIdx().x
+    L = labelSize
+    T = uttLength
+    S = 2*L + 1
+    repeats = repeatsInLabel
+    logPartition = -nllForward[blockIdx().x]
+    
+    labels = labelsWithBlanks
+    alpha = alphas[blockIdx().x]
+    output = similar(alphas)
+    
+    if (L+repeats) > T
+        return nothing
+    end
+    
+    start = S > 1 ? S-2 : 0
+    last = L + repeats < T ? S : S-1
+    
+    sync_threads()
+    
+    i = tid
+    while i <= last - start
+        beta[i+start] = log(probs[(T-1) + label[i+start]])
+        i += blockDim().x
+    end
+    
+    if t < T-1
+        # for t in reverse(1:T)
+        for t=T::-1:1
+            startCurRow = t*S
+            startProbCol = t
+            
+            idx = tid
+            i = 1
+            while idx < S-1
+                
+                nextSum = log_plus_f(beta[idx], beta[idx+1])
+                
+                if label[idx] != blankLabel && idx != S-2 && label[idx] != label[idx+2]
+                    nextSum = log_plus_f(nextSum, beta[idx+1])
+                end
+                
+                beta[i] = nextSum + log(probs(startProbCol + labels[idx]]))
+                
+                idx += NT
+                i += 1
+            end
+        
+            sync_threads()
+            
+            if tid == 0 && last == S
+                beta[S-1] = beta[S-1] + log(probs[startProbCol + blankLabel])
+            end
+            
+            idx = tid
+            while idx < S
+                output[idx] = alpha[idx+startCurRow] + beta[idx]
+                idx += NT
+            end
+            
+            sync_threads()
+        end
+        
+        sync_threads()
+        
+        # TODO: gradient calculation goes here
+        
+        if t == 0 && tid == 0
+            loglike = -Inf32
+            val = 2 * (L-1) + 1 - (L + repeats == T ? 1 : 0)
+            
+            start = -val * (L != 0) + start
+            last = -val * (L != 0) + last
+            
+            for i=start:last
+                loglike = log_plus_f(loglike, beta[i])
+            end
+            
+            nllBackward[blockIdx().x] = -loglike
+        end
+        
+        sync_threads()
     end
 end
 
 function ctc(ŷ, y)
+    blank = 62
     labels = indmax.([y[i,:] for i=1:size(y,1)])
-    z = F(labels)
+    z = F(labels, 62)
+    z′ = [blank]
+    for label in z
+        push!(z′, label)
+        push!(z′, blank)
+    end
     U′ = 2*length(z) + 1
-    alphas = gpu([Flux.Tracker.TrackedReal(Float32(-Inf)) for x in 1:(size(ŷ,1) * U′)])
+#     alphas = Flux.TrackedArray([-Inf for x in 1:(size(ŷ,1) * U′)])
+    alphas = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,1) * U′)])
+    println(size(alphas))
+    println(typeof(alphas))
+    ŷ = Flux.Tracker.data(ŷ )
+    
+    alphalikelihoods = CUDAdrv.CuArray{Float32}(size(ŷ,1))
+    betalikelihoods = similar(alphalikelihoods)
 
     println("beginning alphas computation")
-    @cuda (size(alphas, 1), U′) computeAlphaKernel(ŷ, length(z), U′, countRepeats(labels), z, Array{typeof(z)}(length(z)*2 + 1), alphas,
-        Array{typeof(alphas)}(size(ŷ,1)), 62)
+    @cuda (size(alphas, 1), U′) computeAlphaKernel(ŷ, length(z), U′, countRepeats(labels), CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, alphalikelihoods, blank, -Inf32)
 
     println("alphas done")
+    
+    betas = similar(alphas)
+    println("beginning betas computation")
+    @cuda(size(betas, 1), U′) computeBetasAndGradKernel(ŷ,, length(z), U′, countReapts(label), CUDAdrv.CuArray(z′), alphas, alphalikelihoods, betalikelihoods, GRAD, blank, -Inf32)
 end
