@@ -1,8 +1,7 @@
-# a port of Baidu's C++ warp-ctc package
+# a port of the GPU kernels from Baidu's C++ warp-ctc package
 # GitHub: https://github.com/baidu-research/warp-ctc/
 # paper: https://arxiv.org/pdf/1512.02595.pdf
 
-using Flux
 using CUDAnative, CUDAdrv
 
 function log_plus_f(p1, p2)
@@ -14,7 +13,7 @@ function log_plus_f(p1, p2)
         return p1
     end
 
-    return p1 + log(1+exp(p2 - p1))
+    return p1 + CUDAnative.log(1+exp(p2 - p1))
 end
 
 function F(A, blank)
@@ -40,10 +39,9 @@ function countRepeats(A)
 end
 
 function computeAlphaKernel(probs, labelSize, uttLength, repeatsInLabel,
-                            labelsWithoutBlanks, labelsWithBlanks, alpha, nllForward, blankLabel, ninf)
+                            labelsWithoutBlanks, labelsWithBlanks, alpha, nllForward, blankLabel)
 
 
-    
     tid = threadIdx().x
     L = labelSize
     T = uttLength
@@ -77,7 +75,7 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeatsInLabel,
 
     i = tid
     while i <= (last - start)
-        alpha[i + start] = log(probs[labels[i+start]])
+        alpha[i + start] = CUDAnative.log(probs[labels[i+start]])
         i += blockDim().x
     end
     
@@ -91,7 +89,7 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeatsInLabel,
         if tid == 0
             if start == 0
                 alpha[startCurrRow] = alpha[startPrevRow] +
-                                      log(probs[startProbCol + blankLabel - 1])
+                                      CUDAnative.log(probs[startProbCol + blankLabel - 1])
             elseif start == 1
                 alpha[startCurrRow] = alpha[startPrevRow]
             end
@@ -107,7 +105,7 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeatsInLabel,
             if labels[idx] != blankLabel && idx != 1 && labels[idx] != labels[idx-2]
 
                 prevSum = log_plus_f(prevSum, alpha[(idx-2) + startPrevRow])
-                alpha[idx + startCurrRow] = prevSum + log(probs[startProbCol + labels[idx]])
+                alpha[idx + startCurrRow] = prevSum + CUDAnative.log(probs[startProbCol + labels[idx]])
                 
             end
             idx += blockDim().x
@@ -135,8 +133,8 @@ end
 
 function computeBetasAndGradKernel(probs, labelSize, uttLength,
                                     repeatsInLabel, labelsWithBlanks,
-                                    alphas, nllForward, nllBackward,
-                                    grad, blankLabel, ninf)
+                                    alphas, beta, nllForward, nllBackward,
+                                    grad, blankLabel)
                                     
     tid = threadIdx().x
     L = labelSize
@@ -148,6 +146,12 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
     labels = labelsWithBlanks
     alpha = alphas[blockIdx().x]
     output = similar(alphas)
+    NT = blockDim().x
+    
+    # From Modern GPU documentation
+    # NT = number of threads per thread block
+    # VT = values per thread (registers?)
+    # NV = NT * VT (number of values per thread block)
     
     if (L+repeats) > T
         return nothing
@@ -160,15 +164,16 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
     
     i = tid
     while i <= last - start
-        beta[i+start] = log(probs[(T-1) + label[i+start]])
+        beta[i+start] = CUDAnative.log(probs[(T-1) + labels[i+start]])
         i += blockDim().x
     end
-    
-    if t < T-1
-        # for t in reverse(1:T)
-        for t=T::-1:1
-            startCurRow = t*S
-            startProbCol = t
+#     
+    for t=T:-1:1
+        startCurRow = t*S
+        startProbCol = t
+
+        # TODO: should this be t < T?
+        if t < T-1
             
             idx = tid
             i = 1
@@ -176,34 +181,33 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
                 
                 nextSum = log_plus_f(beta[idx], beta[idx+1])
                 
-                if label[idx] != blankLabel && idx != S-2 && label[idx] != label[idx+2]
+                if labels[idx] != blankLabel && idx != S-2 && labels[idx] != labels[idx+2]
                     nextSum = log_plus_f(nextSum, beta[idx+1])
                 end
                 
-                beta[i] = nextSum + log(probs(startProbCol + labels[idx]]))
+                beta[i] = nextSum + CUDAnative.log(probs[startProbCol + labels[idx]])
                 
                 idx += NT
                 i += 1
             end
         
             sync_threads()
-            
+#             
             if tid == 0 && last == S
-                beta[S-1] = beta[S-1] + log(probs[startProbCol + blankLabel])
+                beta[S-1] = beta[S-1] + CUDAnative.log(probs[startProbCol + blankLabel])
             end
             
             idx = tid
-            while idx < S
-                output[idx] = alpha[idx+startCurRow] + beta[idx]
-                idx += NT
-            end
+            # TODO: the output[idx] gives a runtime incompatibility
+#             while idx < S
+#                 output[idx] = alphas[idx+startCurRow] + beta[idx]
+#                 idx += NT
+#             end
             
             sync_threads()
         end
         
-        sync_threads()
-        
-        # TODO: gradient calculation goes here
+        #     # TODO: gradient calculation goes here
         
         if t == 0 && tid == 0
             loglike = -Inf32
@@ -211,43 +215,103 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             
             start = -val * (L != 0) + start
             last = -val * (L != 0) + last
-            
+#         
             for i=start:last
                 loglike = log_plus_f(loglike, beta[i])
             end
-            
+        
             nllBackward[blockIdx().x] = -loglike
         end
         
         sync_threads()
     end
+
+    return nothing
 end
 
+# function alpha2kernel(probs, alphas, T, U′, alikelihoods, z′, blankLabel)
+#     l = length(alphas)
+#     i = blockIdx().x * blockDim().x + threadIdx().x
+#     while i <= l
+#         t = div(i-1, U′) + 1
+#         u = i - ((t-1)*U′)
+#         if t == u == 1
+#             alphas[i] = CUDAnative.log(probs[blankLabel])
+#         elseif t == 1 && u == 2
+#             alphas[i] = -Inf32
+#         elseif t == 1 && u > 2
+#             alphas[i] = -Inf32
+#         else
+#             idx = u - 2
+#             idx += z′[u] == blankLabel || (u > 2 && z′[u-2] == z′[u])
+#             idx = max(1, idx)
+#             
+#             s = alphas[(t-1)*i + idx]
+# #             
+#             for j=(idx+1):u
+#                 s = log_plus_f(s, alphas[(t-1) * i + j])
+#             end
+#             alphas[i] = s + probs[t*z′[u]]
+#         end
+#         sync_threads()
+#         i += blockDim().x * gridDim().x
+#     end
+#     
+#     return nothing
+# end
+
 function ctc(ŷ, y)
-    blank = 62
-    labels = indmax.([y[i,:] for i=1:size(y,1)])
+#     blank = 62
+    blank = 4
+#     labels = indmax.([y[i,:] for i=1:size(y,1)])
+    labels = argmax.([y[i,:] for i=1:size(y,1)])
     z = F(labels, 62)
     z′ = [blank]
     for label in z
         push!(z′, label)
         push!(z′, blank)
     end
+    T = size(ŷ, 1)
     U′ = 2*length(z) + 1
 #     alphas = Flux.TrackedArray([-Inf for x in 1:(size(ŷ,1) * U′)])
     alphas = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,1) * U′)])
+    betas = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,1) * U′)])
+    println()
     println(size(alphas))
     println(typeof(alphas))
-    ŷ = Flux.Tracker.data(ŷ )
+    #ŷ = Flux.Tracker.data(ŷ )
+    ŷ  = CUDAdrv.CuArray(ŷ )
+    nRepeats = countRepeats(labels)
+    
     
     alphalikelihoods = CUDAdrv.CuArray{Float32}(size(ŷ,1))
     betalikelihoods = similar(alphalikelihoods)
 
     println("beginning alphas computation")
-    @cuda (size(alphas, 1), U′) computeAlphaKernel(ŷ, length(z), U′, countRepeats(labels), CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, alphalikelihoods, blank, -Inf32)
+#     @cuda (size(alphas, 1), U′) computeAlphaKernel(ŷ, length(z), U′, nRepeats, CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, alphalikelihoods, blank)
+    @cuda threads=U′ computeAlphaKernel(ŷ, length(z), U′, nRepeats, CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, alphalikelihoods, blank)
+    
+#     @cuda threads=U′ alpha2kernel(ŷ, alphas, T, U′, alphalikelihoods, CUDAdrv.CuArray(z′), blank)
 
     println("alphas done")
+    grads = similar(betalikelihoods)
+
+    println("extracting alphas")
+    display(Array(alphalikelihoods))
+    println()
+    display(Array(alphas))
+    println()
+    println("alphas extracted")
     
-    betas = similar(alphas)
+    println(typeof(betas))
     println("beginning betas computation")
-    @cuda(size(betas, 1), U′) computeBetasAndGradKernel(ŷ,, length(z), U′, countReapts(label), CUDAdrv.CuArray(z′), alphas, alphalikelihoods, betalikelihoods, GRAD, blank, -Inf32)
+#     @cuda (size(betas, 1), U′) computeBetasAndGradKernel(ŷ, length(z), U′, nRepeats, CUDAdrv.CuArray(z′), alphas, alphalikelihoods, betalikelihoods, grads, blank)
+    @cuda threads=U′ computeBetasAndGradKernel(ŷ, length(z), U′, nRepeats, CUDAdrv.CuArray(z′), alphas, betas, alphalikelihoods, betalikelihoods, grads, blank)
+    println("betas computed")
+
+    # TODO: these produce an illegal memory access
+    display(Array(betas))
+    println()
+#     display(Array(betalikelihoods))
+    println()
 end
