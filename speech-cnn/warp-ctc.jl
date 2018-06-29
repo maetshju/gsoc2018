@@ -16,6 +16,14 @@ function log_plus_f(p1, p2)
     return p1 + CUDAnative.log(1+exp(p2 - p1))
 end
 
+function logsum(a, s)
+        s = a[1]
+        for item in a[2:end]
+            log_plus_f(s, item)
+        end
+        return s
+    end
+
 function F(A, blank)
     prev = A[1]
     z = [prev]
@@ -402,4 +410,8 @@ function ctc(ŷ, y)
     println(Array(grads))
     display(Array(reshape(Array(grads), 4, 4)'))
     println()
+    
+    ls = Array(output)
+    ls = mapslices(logsum, l, 1)
+    return ls
 end

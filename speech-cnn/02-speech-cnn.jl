@@ -1,15 +1,18 @@
 using Flux
-using Flux: relu, crossentropy, logitcrossentropy, back!
+using Flux: relu, crossentropy, logitcrossentropy
+using Flux.Tracker: back!
+using Flux.Optimise: runall, @interrupts
 using NNlib: σ_stable, logsoftmax
 using CuArrays
 using JLD
+using Juno
 
-include("ctc.jl")
+include("warp-ctc.jl")
 
 const TRAINDIR = "train"
 const TESTDIR = "test"
 const EPS = 1e-7
-const BATCHSIZE = 20
+# const BATCHSIZE = 20
 
 function F(A, blank)
     seq = [A[1]]
@@ -70,7 +73,7 @@ function lev(s, t)
 end
 
 # Convolutional section as defined in the paper
-println("building conv section")
+println("Building conv section")
 
 # Data needs to be width x height x channels x number
 convSection = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
@@ -105,6 +108,8 @@ denseSection = Chain(Dense(3328, 1024, relu),
                      Dense(1024, 62, identity),
                      #softmax) |> gpu
                      ) |> gpu
+                     
+
 
 """
     model(x)
@@ -169,26 +174,26 @@ function readData(dataDir)
         push!(Ys, y)
     end
 
-    batchedXs = Xs[1:BATCHSIZE]
-    batchedYs = Ys[1:BATCHSIZE]
-
-    println("tbx: $(typeof(batchedXs))")
-    println("txs: $(typeof(Xs))")
-
-    lXs = length(Xs)
-
-    for i=2:ceil(Int64, length(Xs)/BATCHSIZE)
-        startI = (i-1) * BATCHSIZE + 1
-        lastI = min(lXs, i*BATCHSIZE)
-
-        push!(batchedXs, Xs[startI:lastI])
-        push!(batchedYs, Ys[startI:lastI])
-    end
+#     batchedXs = Xs[1:BATCHSIZE]
+#     batchedYs = Ys[1:BATCHSIZE]
+# 
+#     println("tbx: $(typeof(batchedXs))")
+#     println("txs: $(typeof(Xs))")
+# 
+#     lXs = length(Xs)
+# 
+#     for i=2:ceil(Int64, length(Xs)/BATCHSIZE)
+#         startI = (i-1) * BATCHSIZE + 1
+#         lastI = min(lXs, i*BATCHSIZE)
+# 
+#         push!(batchedXs, Xs[startI:lastI])
+#         push!(batchedYs, Ys[startI:lastI])
+#     end
 
     # Xs = [Xs[((i-1)*BATCHSIZE+1):min(length(Xs),i*BATCHSIZE)] for i in 1:ceil(Int64, length(Xs)/BATCHSIZE)]
     # Ys = [Ys[((i-1)*BATCHSIZE+1):min(length(Ys),i*BATCHSIZE)] for i in 1:ceil(Int64, length(Ys)/BATCHSIZE)]
-    # return (Xs, Ys)
-    return (batchedXs, batchedYs)
+    return (Xs, Ys)
+#     return (batchedXs, batchedYs)
 end
 
 """
@@ -197,17 +202,36 @@ end
 Caclulates the connectionist temporal classification loss for `x` and `y`.
 """
 function loss(x, y)
-    println("calculating loss")
-    ms = model.(x)
-    ls = ctc.(ms, y; gpu=true, eps=true)
-    #=ls = Vector()
-    for (m, yI) in zip(ms, y)
-        push!(ls, ctc(m, yI; gpu=true, eps=true))
-    end=#
+#     println("calculating loss")
+#     ms = model.(x)
+    ms = model(x)
+    # ls = ctc.(ms, y; gpu=true, eps=true)
+#     ls = ctc.(ms, y)
+    ls, gs = ctc(ms', y)
+    #ls = Vector()
+#     for (m, yI) in zip(ms, y)
+#         push!(ls, ctc(m, yI; gpu=true, eps=true))
+#     end
     # println(l)
     #println("mean loss: $(l/min(50, length(y)))")
+#     println(size(ls))
+#     println(size(gs))
     println("mean loss: $(mean(ls))")
     mean(ls)
+    return ls, gs
+end
+
+function ctctrain!(loss, data, opt, parameters; cb = () -> ())
+    cb = runall(cb)
+    opt = runall(opt)
+    @progress for d in data
+        ls, gs = loss(d...)
+        for (p, g) in zip(parameters[end], gs)
+            @interrupts back!(p, g)
+        end
+        opt()
+        cb() == :stop && break
+    end
 end
 
 """
@@ -259,8 +283,9 @@ p = params((convSection, denseSection))
 opt = ADAM(p)
 println()
 println("Training")
-Flux.train!(loss, data, opt)
-#=for (x, y) in data
+# Flux.train!(loss, data, opt)
+ctctrain!(loss, data, opt, p)
+for (x, y) in data
     losses = loss(x, y)
     len = length(losses)
     for (i, l) in enumerate(losses)
@@ -269,7 +294,7 @@ Flux.train!(loss, data, opt)
         opt()
     end
     println("loss $(mean(losses))")
-end=#
+end
 print("Validating\r")
 println("Validation acc. $(evaluatePER(valData))")
 end
