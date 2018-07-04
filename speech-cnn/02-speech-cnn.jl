@@ -124,15 +124,16 @@ function ctctrain!(loss, data, opt, parameters; cb = () -> ())
     losses = Vector()
     @progress for d in data
         ls, gs = loss(d...)
-        println(gs)
+#         println(gs)
         push!(losses, mean(ls))
-        println("mean epoch loss: $(mean(losses))")
+        println("mean loss over time: $(mean(losses))")
         for (p, g) in zip(parameters[end], gs)
             @interrupts back!(p, g)
         end
         opt()
         cb() == :stop && break
     end
+    println("mean epoch loss: $(mean(losses))")
 end
 
 function main()
@@ -147,7 +148,10 @@ p = params((convSection, denseSection))
 opt = ADAM(p)
 println()
 println("Training")
+println("EPOCH 1")
 # Flux.train!(loss, data, opt)
+ctctrain!(loss, data, opt, p)
+println("EPOCH 2")
 ctctrain!(loss, data, opt, p)
 # for (x, y) in data
 #     losses = loss(x, y)

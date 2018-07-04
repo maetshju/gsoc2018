@@ -430,7 +430,7 @@ end
 function ctc(ŷ, y)
 
     blank = size(ŷ, 2)
-    println(blank)
+#     println(blank)
 #     println(size(ŷ))
 #     blank = 62
 #     blank = 4
