@@ -5,15 +5,22 @@
 using CUDAnative, CUDAdrv, Flux
 
 function log_plus_f(p1, p2)
-    if isinf(p1)
-        return p2
-    end
-
-    if isinf(p2)
-        return p1
-    end
-
-    return p1 + CUDAnative.log(1+CUDAnative.exp(p2 - p1))
+    
+    isinf(p1) && return p2
+    isinf(p2) && return p1
+#     if isinf(p1)
+#         return p2
+#     elseif isinf(p2)
+#         return p1
+#     end
+    s = p1 + CUDAnative.log(1+CUDAnative.exp(p2 - p1))
+    # With two very small numbers such as, such as -900 and -800, this will return
+    # Inf32 because -800 - -900 = 100, and exp(100) is Inf with Float32 values.
+    # Rationally, this should be -Inf32, because the calculation is ln(exp(-900) + exp(-800)),
+    # which while not truly 0, is effectively 0 and is too small to be represented with 32 bit
+    # floating point numbers
+    s == Inf32 && return -Inf32
+    return s
 end
 
 
@@ -295,9 +302,10 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         for i=1:S
             s = log_plus_f(s, output[startOutputRow + i])
         end
-        s = - s
-        grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
-        idx += blockIdx().x
+#         s = - s
+#         grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
+        grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
+        idx += blockDim().x
     end
     
     sync_threads()
@@ -349,14 +357,12 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             sync_threads()
         end
         
-        #     # TODO: gradient calculation goes here
-        
-        idx = tid
-        while idx <= div(length(accum), T)
-            startAccRow = (t-1) * div(length(accum), T)
-            accum[startAccRow + idx] = -Inf32
-            idx += blockIdx().x
-        end
+#         idx = tid
+#         while idx <= div(length(accum), T)
+#             startAccRow = (t-1) * div(length(accum), T)
+#             accum[startAccRow + idx] = -Inf32
+#             idx += blockDim().x
+#         end
         
         sync_threads()
 #         
@@ -391,28 +397,28 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             for i=1:S
                 s = log_plus_f(s, output[startOutputRow + i])
             end
-            s = - s
-#             
-            grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
-# #         
-            idx += blockIdx().x
+#         s = - s
+#         grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
+        grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
+        
+            idx += blockDim().x
         end
         
         sync_threads()
         
-        if t == 1 && tid == 1
-            loglike = -Inf32
-            val = 2 * (L-1) + 1 - (L + repeats == T ? 1 : 0)
-            
-            start = -val * (L != 0) + start
-            last = -val * (L != 0) + last
+#         if t == 1 && tid == 1
+#             loglike = -Inf32
+#             val = 2 * (L-1) + 1 - (L + repeats == T ? 1 : 0)
+#             
+#             start = -val * (L != 0) + start
+#             last = -val * (L != 0) + last
+# #         
+#             for i=start:last
+#                 loglike = log_plus_f(loglike, beta[i])
+#             end
 #         
-            for i=start:last
-                loglike = log_plus_f(loglike, beta[i])
-            end
-        
-            nllBackward[blockIdx().x] = -loglike
-        end
+#             nllBackward[blockIdx().x] = -loglike
+#         end
         
         t -= 1
         sync_threads()
@@ -424,6 +430,7 @@ end
 function ctc(ŷ, y)
 
     blank = size(ŷ, 2)
+    println(blank)
 #     println(size(ŷ))
 #     blank = 62
 #     blank = 4
@@ -493,12 +500,18 @@ function ctc(ŷ, y)
 #     println(ls[1,:])
 #     println(logsum(ls[1,:]))
 #     l = logsum.([ls[x,:] for x in 1:size(ls,1)])
+#     println(any(isinf, mapslices(logsum, ls, 1)))
     ls = mapslices(logsum, ls, 2)
     ls = ls .* -1
     gs = permutedims(reshape(Array(grads), size(ŷ,2), size(ŷ,1)), [2,1])
-    println(any(isinf, gs))
+#     println(any(isinf, Array(ŷ)))
+#     println(any(x -> x == -Inf32, exp.(Array(accum))))
+#     print("Is inf32? ")
+#     println(any(x -> x == Inf32, exp.(Array(accum))))
+#     println(any(isinf, gs))
+#     println(exp.(Array(accum)[(end-62):end]))
 #     println(gs[56,:])
-    println(size(gs))
+#     println(size(gs))
     gs = vec(mapslices(sum, gs, 1))
 #     display(gs)
 #     println()
