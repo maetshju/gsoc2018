@@ -1,5 +1,5 @@
 using Flux
-using Flux: relu, crossentropy, logitcrossentropy
+using Flux: relu, crossentropy, logitcrossentropy, @epochs
 using Flux.Tracker: back!
 using Flux.Optimise: runall, @interrupts
 using NNlib: σ_stable, logsoftmax
@@ -13,7 +13,7 @@ include("utils.jl")
 const TRAINDIR = "train"
 const TESTDIR = "test"
 const EPS = 1e-7
-# const BATCHSIZE = 20
+const BATCHSIZE = 20
 
 # Convolutional section as defined in the paper
 println("Building conv section")
@@ -21,36 +21,38 @@ println("Building conv section")
 # Data needs to be width x height x channels x number
 convSection = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
                     x -> maxpool(x, (1,3)),
-                    # Dropout(0.3),
+                    Dropout(0.3),
                     Conv((3, 5), 128=>128, relu; pad=(1, 2)),
-                    # Dropout(0.3),
+                    Dropout(0.3),
                     Conv((3, 5), 128=>128, relu; pad=(1, 2)),
-                    # Dropout(0.3),
+                    Dropout(0.3),
                     Conv((3, 5), 128=>128, relu; pad=(1, 2)),
-                    # Dropout(0.3),
+                    Dropout(0.3),
                     Conv((3, 5), 128=>256, relu, pad=(1, 2)),
-                    # Dropout(0.3),
+                    Dropout(0.3),
                     Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    # Dropout(0.3),
+                    Dropout(0.3),
                     Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    # Dropout(0.3),
+                    Dropout(0.3),
                     Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    # Dropout(0.3),
+                    Dropout(0.3),
                     Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    # Dropout(0.3),
+                    Dropout(0.3),
                     Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    # Dropout(0.3)) |> gpu
-                    # Dropout(0.3)) |> gpu
-                    ) |> gpu
+                    Dropout(0.3)) |> gpu
+#                     ) |> gpu
 
 # Dense section comes after the convolutions in the paper
 println("Building dense section")
 denseSection = Chain(Dense(3328, 1024, relu),
+                     Dropout(0.3),
                      Dense(1024, 1024, relu),
+                     Dropout(0.3),
                      Dense(1024, 1024, relu),
+                     Dropout(0.3),
                      Dense(1024, 62, identity),
-                     #softmax) |> gpu
-                     ) |> gpu
+                     softmax) |> gpu
+#                      ) |> gpu
                      
 
 
@@ -73,21 +75,29 @@ function model(x)
     afterConv = convSection(x)
     #println("afterconv $(afterConv)")
     dims = size(afterConv)
+    println(dims)
     afterConv = reshape(afterConv, (dims[1], prod(dims[2:end])))
+    println(size(afterConv))
     ŷ = Vector()
     # ŷ  = gpu(zeros(size(afterConv, 1), 62))
-    ŷ  = softmax(denseSection(afterConv[1,:]))
+    ŷ  = denseSection(afterConv[1,:])
+#     display(ŷ )
+#     println()
     for i in 2:size(afterConv, 1)
         # push!(ŷ, softmax(denseSection(afterConv[i,:])))
 	# ŷ[i,:] = softmax(denseSection(afterConv[i,:]))
-	ŷ  = hcat(ŷ ,softmax(denseSection(afterConv[i,:])))
+        afterDense = denseSection(afterConv[i,:])
+#         println(size(afterDense))
+        ŷ  = hcat(ŷ ,afterDense)
     end
     #ŷ  = [yI .+ EPS for yI in ŷ ]
     #ŷ  = [softmax(yI - maximum(yI)) for yI in ŷ ]
     #ŷ  = softmax.(ŷ )
     #ŷ  = collect(Iterators.flatten(ŷ ))
     #ŷ  = gpu(hcat(ŷ))
+    println(size(ŷ ))
     ŷ  = gpu(ŷ )
+#     exit()
     return ŷ 
     #return gpu(collect(Iterators.flatten(ŷ)))
     #return ŷ 
@@ -104,7 +114,7 @@ function loss(x, y)
     ms = model(x)
     # ls = ctc.(ms, y; gpu=true, eps=true)
 #     ls = ctc.(ms, y)
-    ls, gs = ctc(ms', y)
+    ls, gs = ctc(ms, y)
     #ls = Vector()
 #     for (m, yI) in zip(ms, y)
 #         push!(ls, ctc(m, yI; gpu=true, eps=true))
@@ -115,7 +125,7 @@ function loss(x, y)
 #     println(size(gs))
 #     println("mean loss: $(mean(ls))")
     mean(ls)
-    return ls, gs
+    return ls, gs, ms
 end
 
 function ctctrain!(loss, data, opt, parameters; cb = () -> ())
@@ -123,13 +133,16 @@ function ctctrain!(loss, data, opt, parameters; cb = () -> ())
     opt = runall(opt)
     losses = Vector()
     @progress for d in data
-        ls, gs = loss(d...)
-#         println(gs)
+        ls, gs, ms = loss(d...)
+        println(gs[:,end])
         push!(losses, mean(ls))
+        println("example loss: $(losses[end])")
         println("mean loss over time: $(mean(losses))")
-        for (p, g) in zip(parameters[end], gs)
-            @interrupts back!(p, g)
-        end
+#         println(gs)
+        @interrupts Flux.Tracker.back!(ms[1:end], gs[1:end])
+#         for i=1:size(ms, 2)
+#             @interrupts Flux.Tracker.back!(ms[:,i], gs[:,i])
+#         end
         opt()
         cb() == :stop && break
     end
@@ -140,19 +153,16 @@ function main()
 println("Gathering data")
 Xs, Ys = readData(TRAINDIR)
 data = collect(zip(Xs, Ys))
-#valData = data[1:189]
-valData = data[1:10] # this when each item is a batch of 20
-#data = data[190:end]
-data = data[21:end] # batch size = 20
+valData = data[1:189]
+# valData = data[1:10] # this when each item is a batch of 20
+data = data[190:end]
+# data = data[21:end] # batch size = 20
 p = params((convSection, denseSection))
-opt = ADAM(p)
+opt = ADAM(p, 10.0^-4)
 println()
 println("Training")
-println("EPOCH 1")
 # Flux.train!(loss, data, opt)
-ctctrain!(loss, data, opt, p)
-println("EPOCH 2")
-ctctrain!(loss, data, opt, p)
+@epochs 1 ctctrain!(loss, data, opt, p)
 # for (x, y) in data
 #     losses = loss(x, y)
 #     len = length(losses)
@@ -164,7 +174,7 @@ ctctrain!(loss, data, opt, p)
 #     println("loss $(mean(losses))")
 # end
 print("Validating\r")
-println("Validation acc. $(evaluatePER(valData))")
+println("Validation Phoneme Error Rate. $(evaluatePER(valData))")
 end
 
 main()
