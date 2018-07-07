@@ -228,7 +228,7 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             
             idx = tid
             i = 0
-            while idx <= S
+            while idx < S
                 
                 nextSum = log_plus_f(beta[startNextRow + idx], beta[startNextRow + idx+1])
                 
@@ -250,9 +250,11 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         
             sync_threads()
 #             
-            if tid == 0 && last == S
+            if tid == 1 && last == S
                 beta[S-1] = beta[S-1] + CUDAnative.log(probs[startProbCol + blankLabel])
             end
+            
+            sync_threads()
             
             idx = tid
             while idx <= S
