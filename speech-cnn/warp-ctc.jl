@@ -102,7 +102,15 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
         startPrevRow = (t-2) * S
         startProbCol = (t-1) * div(length(probs), T)
         
-        ## First column stuff, if we need it, goes here
+        if tid == 1
+            if start == 0
+                alpha[startCurRow + 1] = CUDAnative.log(probs[startProbCol + blankLabel])
+            elseif start == 1
+                alpha[startCurRow + 1] = alpha[startPrevRow + 1]
+            end
+        end
+        
+        sync_threads()
         
         idx = tid + 1
         while idx <= S
@@ -127,108 +135,6 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
     end
     return nothing
 end
-
-# function computeAlphaKernel(probs, labelSize, uttLength, repeatsInLabel,
-#                             labelsWithoutBlanks, labelsWithBlanks, alpha, nllForward, blankLabel)
-# 
-# 
-#     tid = threadIdx().x
-#     L = labelSize
-#     T = uttLength
-#     S = 2*L + 1
-# # #     const prob_offset = out_dim
-#     repeats = repeatsInLabel
-# # 
-# #     # TODO: What in the world is this?
-# # #     const NV = NT * VT
-# # 
-#     if L + repeats > T
-#         return nothing
-#     end
-# # 
-# #     
-# 
-#     ## TODO: May need to add the final if(tid==0) portion
-# 
-#     labels = labelsWithBlanks
-#     
-#     ## Shouldn't be necessary because alpha was already initialized with -Inf32
-# #     for idx=tid:blockDim().x:S
-# #         alpha[idx] = ninf
-# #     end
-# # 
-# #     ## TODO: load labels into shared memory
-# # 
-#     sync_threads()
-#     start = (L + repeats <= T) ? 0 : 1
-#     last = S > 1 ? 2 : 1
-# 
-#     i = tid
-#     while i <= (last - start)
-#         alpha[i + start] = CUDAnative.log(probs[labels[i+start]])
-#         i += blockDim().x
-#     end
-#     
-#     sync_threads()
-# 
-#     for t=2:T
-#         # need to subtract from `t` becuase Julia indexes from 1
-#         startCurrRow = (t-1) * S
-#         startPrevRow = (t-2) * S
-#         startProbCol = (t-1) * div(length(probs), T)
-# 
-#         if tid == 1
-#             if start == 0
-#                 alpha[startCurrRow+1] = alpha[startPrevRow+1] +
-#                                       CUDAnative.log(probs[startProbCol+1 + blankLabel])
-#             elseif start == 1
-#                 alpha[startCurrRow+1] = alpha[startPrevRow+1]
-#             end
-#         end
-# 
-#         sync_threads()
-# 
-#         idx = tid
-#         while idx <= S
-# #         for idx=(tid+1):blockDim().x:(S-1)
-#             prevSum = log_plus_f(alpha[idx + startPrevRow], alpha[(idx-1) + startPrevRow])
-#             
-#             if idx > 2 && labels[idx] != blankLabel && labels[idx] != labels[idx-2]
-# 
-#                 prevSum = log_plus_f(prevSum, alpha[(idx-2) + startPrevRow])
-#                 
-#             end
-#             if idx < S - 2*(T-t) - 1
-#                 alpha[idx + startCurrRow] = -Inf32
-#             else
-#                 alpha[idx + startCurrRow] = prevSum + CUDAnative.log(probs[startProbCol + labels[idx]])
-# #                 alpha[idx + startCurrRow] = labels[idx]
-# #                 alpha[idx + startCurrRow] = S - 2*(T-t) - 1
-#             end   
-#             idx += blockDim().x
-#         end
-# 
-#         sync_threads()
-# 
-#         if tid == 0
-#             loglike = -Inf32
-#             val = 2*(L-1) + 1 - (L + repeats == T ? 1 : 0)
-# 
-#             start = val * (L != 0) + start
-#             last = val * (L != 0) + last
-#  
-#              for i=start:last
-#                 loglike = log_plus_f(loglike, alpha[i + (T-1) * S])
-#              end
-#              nllForward[blockIdx().x] = -loglike
-#         end
-#         
-#         sync_threads()
-#         
-#     end
-# 
-#     return nothing
-# end
 
 function computeBetasAndGradKernel(probs, labelSize, uttLength,
                                     repeatsInLabel, labelsWithBlanks,
@@ -438,7 +344,7 @@ function ctc(ŷ, y)
     labels = indmax.([y[i,:] for i=1:size(y,1)])
 #     labels = argmax.([y[i,:] for i=1:size(y,1)])
     z = F(labels, blank)
-    println(ŷ[:,end])
+    println(ŷ[1,:])
     println(indmax.([ŷ[:,i] for i=1:size(ŷ,2)]))
 #     println(z)
     z′ = [blank]
@@ -446,9 +352,10 @@ function ctc(ŷ, y)
         push!(z′, label)
         push!(z′, blank)
     end
-#     println(z′)
+    println("z′ $(z′)")
     T = size(ŷ, 2)
     U′ = 2*length(z) + 1
+    println("$(T), $(U′)")
 #     alphas = Flux.TrackedArray([-Inf for x in 1:(size(ŷ,1) * U′)])
     alphas = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,2) * U′)])
     betas = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,2) * U′)])
@@ -518,10 +425,23 @@ function ctc(ŷ, y)
 #     println(exp.(Array(accum)[(end-62):end]))
 #     println(gs[56,:])
 #     println(size(gs))
-#     accum = reshape(Array(accum), size(ŷ,1), size(ŷ,2))
+    accum = reshape(Array(accum), size(ŷ,1), size(ŷ,2))
+    println(any(isinf, accum))
 #     println("accum")
 #     println(size(accum))
-#     println(accum[:,end])
+    println("accum")
+    println(accum[1,:])
+    print("output 1: ")
+    output = reshape(Array(output), U′, T)'
+    println(output[1,:])
+    println("output 2: $(output[2,:])")
+    println("output 3: $(output[3,:])")
+    println("output 4: $(output[4,:])")
+#     println("output 5: $(output[5,:])")
+    alpha = reshape(Array(alphas), U′, T)'
+#     println("alpha 5: $(alpha[5,:])")
+    beta = reshape(Array(betas), U′, T)'
+#     println("beta 5: $(beta[5,:])")
 #     println("grads")
 #     println(size(gs))
 #     println(gs[:,end])
