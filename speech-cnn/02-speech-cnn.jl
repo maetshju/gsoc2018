@@ -1,8 +1,8 @@
 using Flux
 using Flux: relu, crossentropy, logitcrossentropy, @epochs
 using Flux.Tracker: back!
-using Flux.Optimise: runall, @interrupts
-using NNlib: σ_stable, logsoftmax
+using Flux.Optimise: runall, @interrupts, SGD
+# using NNlib: σ_stable, logsoftmax
 using CuArrays
 using JLD
 using Juno
@@ -50,7 +50,7 @@ denseSection = Chain(Dense(3328, 1024, relu),
                      Dropout(0.3),
                      Dense(1024, 1024, relu),
                      Dropout(0.3),
-                     Dense(1024, 62, identity),
+                     Dense(1024, 62),
                      softmax) |> gpu
 #                      ) |> gpu
                      
@@ -96,7 +96,6 @@ function model(x)
     #ŷ  = collect(Iterators.flatten(ŷ ))
     #ŷ  = gpu(hcat(ŷ))
     println(size(ŷ ))
-    ŷ  = gpu(ŷ )
 #     exit()
     return ŷ 
     #return gpu(collect(Iterators.flatten(ŷ)))
@@ -134,12 +133,18 @@ function ctctrain!(loss, data, opt, parameters; cb = () -> ())
     losses = Vector()
     @progress for d in data
         ls, gs, ms = loss(d...)
-        println(gs[:,end])
         push!(losses, mean(ls))
         println("example loss: $(losses[end])")
         println("mean loss over time: $(mean(losses))")
 #         println(gs)
+#         println(parameters[end-1].grad)
         @interrupts Flux.Tracker.back!(ms[1:end], gs[1:end])
+#         println(ms.tracker.grad)
+#         for (p, g) in zip(ms[:,end], gs[:,end])
+#             @interrupts back!(p, g)
+#         end
+#         println(parameters[end-1].grad)
+#         println(ms.tracker.grad)
 #         for i=1:size(ms, 2)
 #             @interrupts Flux.Tracker.back!(ms[:,i], gs[:,i])
 #         end
