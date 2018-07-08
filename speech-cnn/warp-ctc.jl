@@ -227,7 +227,6 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         if t < T
             
             idx = tid
-            i = 0
             while idx < S
                 
                 nextSum = log_plus_f(beta[startNextRow + idx], beta[startNextRow + idx+1])
@@ -245,13 +244,12 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
 #                 beta[idx + startCurRow] = t
                 
                 idx += NT
-                i += 1
             end
         
             sync_threads()
 #             
             if tid == 1 && last == S
-                beta[S-1] = beta[S-1] + CUDAnative.log(probs[startProbCol + blankLabel])
+                beta[startCurRow + S] = beta[startNextRow + S] + CUDAnative.log(probs[startProbCol + blankLabel])
             end
             
             sync_threads()
@@ -357,7 +355,7 @@ function ctc(ŷ, y)
     println("z′ $(z′)")
     T = size(ŷ, 2)
     U′ = 2*length(z) + 1
-    println("$(T), $(U′)")
+#     println("$(T), $(U′)")
 #     alphas = Flux.TrackedArray([-Inf for x in 1:(size(ŷ,1) * U′)])
     alphas = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,2) * U′)])
     betas = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,2) * U′)])
@@ -428,18 +426,19 @@ function ctc(ŷ, y)
 #     println(gs[56,:])
 #     println(size(gs))
     accum = reshape(Array(accum), size(ŷ,1), size(ŷ,2))
-    println(any(isinf, accum))
+#     println(any(isinf, accum))
 #     println("accum")
 #     println(size(accum))
-    println("accum")
-    println(accum[1,:])
-    print("output 1: ")
+#     println("accum")
+#     println(accum[1,:])
+#     print("output 1: ")
     output = reshape(Array(output), U′, T)'
-    println(output[1,:])
-    println("output 2: $(output[2,:])")
-    println("output 3: $(output[3,:])")
-    println("output 4: $(output[4,:])")
+#     println(output[1,:])
+#     println("output 2: $(output[2,:])")
+#     println("output 3: $(output[3,:])")
+#     println("output 4: $(output[4,:])")
 #     println("output 5: $(output[5,:])")
+#     println("ouptut class 9: $(output[:,9])")
     alpha = reshape(Array(alphas), U′, T)'
 #     println("alpha 5: $(alpha[5,:])")
     beta = reshape(Array(betas), U′, T)'
