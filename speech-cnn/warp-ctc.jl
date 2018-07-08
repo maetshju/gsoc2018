@@ -227,7 +227,7 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         if t < T
             
             idx = tid
-            while idx < S
+            while idx <= S
                 
                 nextSum = log_plus_f(beta[startNextRow + idx], beta[startNextRow + idx+1])
                 
@@ -248,9 +248,9 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         
             sync_threads()
 #             
-            if tid == 1 && last == S
-                beta[startCurRow + S] = beta[startNextRow + S] + CUDAnative.log(probs[startProbCol + blankLabel])
-            end
+#             if tid == 1 && last == S
+#                 beta[startCurRow + S] = beta[startNextRow + S] + CUDAnative.log(probs[startProbCol + blankLabel])
+#             end
             
             sync_threads()
             
@@ -432,12 +432,17 @@ function ctc(ŷ, y)
 #     println("accum")
 #     println(accum[1,:])
 #     print("output 1: ")
+    println("accum class 9 $(accum[9,:])")
     output = reshape(Array(output), U′, T)'
-#     println(output[1,:])
-#     println("output 2: $(output[2,:])")
-#     println("output 3: $(output[3,:])")
-#     println("output 4: $(output[4,:])")
-#     println("output 5: $(output[5,:])")
+    println(output[1,:])
+    println("output 2: $(output[2,:])")
+    println("output 3: $(output[3,:])")
+    println("output 4: $(output[4,:])")
+    println("output 5: $(output[5,:])")
+    println("output end-4: $(output[end-4,:])")
+    println("output end-3: $(output[end-3,:])")
+    println("output end-2: $(output[end-2,:])")
+    println("output end-1: $(output[end-1,:])")
 #     println("ouptut class 9: $(output[:,9])")
     alpha = reshape(Array(alphas), U′, T)'
 #     println("alpha 5: $(alpha[5,:])")
