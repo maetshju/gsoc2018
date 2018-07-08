@@ -102,7 +102,7 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
         startPrevRow = (t-2) * S
         startProbCol = (t-1) * div(length(probs), T)
         
-        if tid == 1
+        if tid == 1 && !(1 < S - 2*(T-t) - 1)
             if start == 0
                 alpha[startCurRow + 1] = CUDAnative.log(probs[startProbCol + blankLabel])
             elseif start == 1
@@ -112,13 +112,13 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
         
         sync_threads()
         
-        idx = tid + 1
+        idx = tid+1
         while idx <= S
         
             
             prevSum = log_plus_f(alpha[startPrevRow + idx], alpha[startPrevRow + idx-1])
             
-            if labels[idx] != blankLabel && idx != 2 && labels[idx] != labels[idx-2]
+            if labels[idx] != blankLabel && idx > 2 && labels[idx] != labels[idx-2]
                 prevSum = log_plus_f(prevSum, alpha[startPrevRow + idx-2])
             end
             
@@ -210,7 +210,9 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         end
 #         s = - s
 #         grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
-        grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
+#         grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
+        grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
+#         grad[startProbRow + idx] = CUDAnative.log(probs[startProbRow + idx])
         idx += blockDim().x
     end
     
@@ -227,7 +229,7 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         if t < T
             
             idx = tid
-            while idx <= S
+            while idx <= S-1
                 
                 nextSum = log_plus_f(beta[startNextRow + idx], beta[startNextRow + idx+1])
                 
@@ -247,10 +249,10 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             end
         
             sync_threads()
-#             
-#             if tid == 1 && last == S
-#                 beta[startCurRow + S] = beta[startNextRow + S] + CUDAnative.log(probs[startProbCol + blankLabel])
-#             end
+            
+            if tid == 1 && last == S && ! (S > 2*t)
+                beta[startCurRow + S] = beta[startNextRow + S] + CUDAnative.log(probs[startProbCol + blankLabel])
+            end
             
             sync_threads()
             
@@ -303,10 +305,11 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             for i=1:S
                 s = log_plus_f(s, output[startOutputRow + i])
             end
-#         s = - s
 #         grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
-        grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
-        
+#             grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
+            # TODO: this needs to be checked more thoroughly
+            grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
+#             grad[startProbRow + idx] = accum[startProbRow + idx]
             idx += blockDim().x
         end
         
@@ -328,6 +331,9 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         
         t -= 1
         sync_threads()
+        # because of course, it wouldn't work without this earlier return statement
+        # otherwise, the 
+        t == 0 && return
     end
 
     return nothing
@@ -373,7 +379,7 @@ function ctc(ŷ, y)
     betalikelihoods = similar(alphalikelihoods)
 
 #     println("beginning alphas computation")
-    @cuda (U′, U′) computeAlphaKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, blank)
+    @cuda (1, U′) computeAlphaKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, blank)
 #     @cuda threads=U′ computeAlphaKernel(ŷ, length(z), size(ŷ,1), nRepeats, CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, alphalikelihoods, blank)
 #     
 # #     @cuda threads=U′ alpha2kernel(ŷ, alphas, T, U′, alphalikelihoods, CUDAdrv.CuArray(z′), blank)
@@ -391,7 +397,7 @@ function ctc(ŷ, y)
 #     println("beginning betas computation")
     output = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,2) * U′)])
     accum = CUDAdrv.CuArray([-Inf32 for x in 1:length(ŷ)])
-    @cuda (U′, U′) computeBetasAndGradKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, alphalikelihoods, betalikelihoods, grads, blank)
+    @cuda (1, U′) computeBetasAndGradKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, alphalikelihoods, betalikelihoods, grads, blank)
 #     @cuda threads=U′ computeBetasAndGradKernel(ŷ, length(z), size(ŷ,1), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, alphalikelihoods, betalikelihoods, grads, blank)
 #     println("betas computed")
 
@@ -429,25 +435,25 @@ function ctc(ŷ, y)
 #     println(any(isinf, accum))
 #     println("accum")
 #     println(size(accum))
-#     println("accum")
-#     println(accum[1,:])
-#     print("output 1: ")
-    println("accum class 9 $(accum[9,:])")
+    println("accum")
+    println(accum[1,:])
+    print("output 1: ")
+#     println("accum class 9 $(accum[9,:])")
     output = reshape(Array(output), U′, T)'
     println(output[1,:])
-    println("output 2: $(output[2,:])")
-    println("output 3: $(output[3,:])")
-    println("output 4: $(output[4,:])")
-    println("output 5: $(output[5,:])")
-    println("output end-4: $(output[end-4,:])")
-    println("output end-3: $(output[end-3,:])")
-    println("output end-2: $(output[end-2,:])")
-    println("output end-1: $(output[end-1,:])")
+#     println("output 2: $(output[2,:])")
+#     println("output 3: $(output[3,:])")
+#     println("output 4: $(output[4,:])")
+#     println("output 5: $(output[5,:])")
+#     println("output end-4: $(output[end-4,:])")
+#     println("output end-3: $(output[end-3,:])")
+#     println("output end-2: $(output[end-2,:])")
+#     println("output end-1: $(output[end-1,:])")
 #     println("ouptut class 9: $(output[:,9])")
     alpha = reshape(Array(alphas), U′, T)'
-#     println("alpha 5: $(alpha[5,:])")
+#     println("alpha end-1: $(alpha[end-1,:])")
     beta = reshape(Array(betas), U′, T)'
-#     println("beta 5: $(beta[5,:])")
+#     println("beta end-1: $(beta[end-1,:])")
 #     println("grads")
 #     println(size(gs))
 #     println(gs[:,end])
@@ -458,5 +464,11 @@ function ctc(ŷ, y)
 #     gs = vec(mapslices(sum, gs, 2))
 #     display(gs)
 #     println()
+#     display(reshape(Array(accum), 4, 4))
+    println(Array(alpha))
+    println(Array(beta))
+    println(Array(output))
+    display(reshape(Array(accum), 4, 4))
+    println()
     return vec(ls), gs
 end
