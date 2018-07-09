@@ -3,6 +3,7 @@
 # paper: https://arxiv.org/pdf/1512.02595.pdf
 
 using CUDAnative, CUDAdrv, Flux
+const EPS = 1e-7
 
 function log_plus_f(p1, p2)
     
@@ -81,19 +82,19 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
     
     labels = labelsWithBlanks
     
-    start = (L + repeats < T) ? 0 : 1
+    start = (L + repeats <= T) ? 0 : 1
     last = S > 1 ? 2 : 1
     
-#     i = tid
-#     while i <= last - start
-#         alpha[start + i] = CUDAnative.log(probs[labels[start + i]])
-#         i += blockDim().x
-#     end
-
-    if tid == 1
-        alpha[1] = CUDAnative.log(probs[labels[1]])
-        alpha[2] = CUDAnative.log(probs[labels[2]])
+    i = tid
+    while i <= last - start
+        alpha[start + i] = CUDAnative.log(probs[labels[start + i]])
+        i += blockDim().x
     end
+
+#     if tid == 1
+#         alpha[1] = CUDAnative.log(probs[labels[1]])
+#         alpha[2] = CUDAnative.log(probs[labels[2]])
+#     end
     
     sync_threads()
     
@@ -104,7 +105,7 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
         
         if tid == 1 && !(1 < S - 2*(T-t) - 1)
             if start == 0
-                alpha[startCurRow + 1] = CUDAnative.log(probs[startProbCol + blankLabel])
+                alpha[startCurRow + 1] = CUDAnative.log(probs[startProbCol + blankLabel]) + alpha[startPrevRow + 1]
             elseif start == 1
                 alpha[startCurRow + 1] = alpha[startPrevRow + 1]
             end
@@ -250,7 +251,8 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         
             sync_threads()
             
-            if tid == 1 && last == S && ! (S > 2*t)
+#             if tid == 1 && last == S && ! (S > 2*t)
+            if tid == 1 && last == S
                 beta[startCurRow + S] = beta[startNextRow + S] + CUDAnative.log(probs[startProbCol + blankLabel])
             end
             
@@ -332,7 +334,7 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         t -= 1
         sync_threads()
         # because of course, it wouldn't work without this earlier return statement
-        # otherwise, the 
+        # otherwise, some of the gradient values become 0
         t == 0 && return
     end
 
@@ -350,7 +352,7 @@ function ctc(ŷ, y)
     labels = indmax.([y[i,:] for i=1:size(y,1)])
 #     labels = argmax.([y[i,:] for i=1:size(y,1)])
     z = F(labels, blank)
-    println(ŷ[1,:])
+    println(ŷ[:,1])
     println(indmax.([ŷ[:,i] for i=1:size(ŷ,2)]))
 #     println(z)
     z′ = [blank]
@@ -370,7 +372,7 @@ function ctc(ŷ, y)
 #     println(size(alphas))
 #     println(typeof(alphas))
     #ŷ = Flux.Tracker.data(ŷ )
-    ŷ  = CUDAdrv.CuArray(cpu(Flux.Tracker.data(ŷ )))
+    ŷ  = CUDAdrv.CuArray(cpu(Flux.Tracker.data(ŷ ) .+ EPS))
     nRepeats = countRepeats(labels)
 #     println("labels: $(z′)")
     
@@ -435,12 +437,13 @@ function ctc(ŷ, y)
 #     println(any(isinf, accum))
 #     println("accum")
 #     println(size(accum))
-    println("accum")
-    println(accum[1,:])
-    print("output 1: ")
+#     println("accum")
+#     println(accum[1,:])
+#     print("output 1: ")
 #     println("accum class 9 $(accum[9,:])")
     output = reshape(Array(output), U′, T)'
-    println(output[1,:])
+#     println(output[1,:])
+#     println("output 1: $(output[1,:])")
 #     println("output 2: $(output[2,:])")
 #     println("output 3: $(output[3,:])")
 #     println("output 4: $(output[4,:])")
@@ -451,8 +454,11 @@ function ctc(ŷ, y)
 #     println("output end-1: $(output[end-1,:])")
 #     println("ouptut class 9: $(output[:,9])")
     alpha = reshape(Array(alphas), U′, T)'
+#     println("alpha start: $(alpha[1,:])")
+#     println("alpha start 2: $(alpha[2,:])")
 #     println("alpha end-1: $(alpha[end-1,:])")
     beta = reshape(Array(betas), U′, T)'
+#     println("beta start: $(beta[1,:])")
 #     println("beta end-1: $(beta[end-1,:])")
 #     println("grads")
 #     println(size(gs))
@@ -465,10 +471,5 @@ function ctc(ŷ, y)
 #     display(gs)
 #     println()
 #     display(reshape(Array(accum), 4, 4))
-    println(Array(alpha))
-    println(Array(beta))
-    println(Array(output))
-    display(reshape(Array(accum), 4, 4))
-    println()
     return vec(ls), gs
 end

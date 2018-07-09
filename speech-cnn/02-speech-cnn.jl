@@ -134,9 +134,12 @@ function ctctrain!(loss, data, opt, parameters; cb = () -> ())
     @progress for d in data
         ls, gs, ms = loss(d...)
         push!(losses, mean(ls))
+#         println("l1: $(ls[1])")
+        println("ls: $(ls)")
         println("example loss: $(losses[end])")
         println("mean loss over time: $(mean(losses))")
-#         println(gs)
+        println(gs[62,:])
+#         exit()
 #         println(parameters[end-1].grad)
         @interrupts Flux.Tracker.back!(ms[1:end], gs[1:end])
 #         println(ms.tracker.grad)
@@ -150,6 +153,10 @@ function ctctrain!(loss, data, opt, parameters; cb = () -> ())
 #         end
         opt()
         cb() == :stop && break
+        ls = nothing
+        gs = nothing
+        ms = nothing
+        gc()
     end
     println("mean epoch loss: $(mean(losses))")
 end
@@ -160,14 +167,30 @@ Xs, Ys = readData(TRAINDIR)
 data = collect(zip(Xs, Ys))
 valData = data[1:189]
 # valData = data[1:10] # this when each item is a batch of 20
-data = data[190:end]
+trainData = data[190:end]
 # data = data[21:end] # batch size = 20
 p = params((convSection, denseSection))
 opt = ADAM(p, 10.0^-4)
 println()
 println("Training")
 # Flux.train!(loss, data, opt)
-@epochs 1 ctctrain!(loss, data, opt, p)
+dataI = 1
+chunkSize = 200
+for i=1:1
+    trainData = data[190:end]
+    println("EPOCH $(i)")
+    while length(trainData) > chunkSize
+        trainOn = gpu.(trainData[1:550])
+        ctctrain!(loss, trainOn, opt, p)
+        trainData = trainData[501:end]
+        trainOn = nothing
+        gc()
+    end
+    ctctrain!(trainData)
+    print("Validating\r")
+    println("Validation Phoneme Error Rate. $(evaluatePER(gpu.(valData)))")
+end
+# @epochs 1 ctctrain!(loss, data, opt, p); print("Validating\r"); println("Validation Phoneme Error Rate. $(evaluatePER(valData))")
 # for (x, y) in data
 #     losses = loss(x, y)
 #     len = length(losses)
@@ -178,8 +201,8 @@ println("Training")
 #     end
 #     println("loss $(mean(losses))")
 # end
-print("Validating\r")
-println("Validation Phoneme Error Rate. $(evaluatePER(valData))")
+# change out of training mode so dropout isn't used during evaluation
+# testmode!(model, false)
 end
 
 main()
