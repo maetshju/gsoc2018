@@ -4,7 +4,7 @@ using Flux.Tracker: back!
 using Flux.Optimise: runall, @interrupts, SGD
 # using NNlib: σ_stable, logsoftmax
 using CuArrays
-using JLD
+using JLD, BSON
 using Juno
 
 include("warp-ctc.jl")
@@ -15,49 +15,13 @@ const TESTDIR = "test"
 const EPS = 1e-7
 const BATCHSIZE = 20
 
-# Convolutional section as defined in the paper
-println("Building conv section")
+println("Building network")
 
-# Data needs to be width x height x channels x number
-convSection = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
-                    x -> maxpool(x, (1,3)),
-                    Dropout(0.3),
-                    Conv((3, 5), 128=>128, relu; pad=(1, 2)),
-                    Dropout(0.3),
-                    Conv((3, 5), 128=>128, relu; pad=(1, 2)),
-                    Dropout(0.3),
-                    Conv((3, 5), 128=>128, relu; pad=(1, 2)),
-                    Dropout(0.3),
-                    Conv((3, 5), 128=>256, relu, pad=(1, 2)),
-                    Dropout(0.3),
-                    Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    Dropout(0.3),
-                    Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    Dropout(0.3),
-                    Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    Dropout(0.3),
-                    Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    Dropout(0.3),
-                    Conv((3, 5), 256=>256, relu, pad=(1, 2)),
-                    Dropout(0.3)) |> gpu
-#                     ) |> gpu
-
-# Dense section comes after the convolutions in the paper
-println("Building dense section")
-denseSection = Chain(Dense(3328, 1024, relu),
-                     Dropout(0.3),
-                     Dense(1024, 1024, relu),
-                     Dropout(0.3),
-                     Dense(1024, 1024, relu),
-                     Dropout(0.3),
-                     Dense(1024, 62),
-                     softmax) |> gpu
-#                      ) |> gpu
-                     
-
+poolX(x) = maxpool(x, (1,3))
+reshapeX(x) = transpose(reshape(x, size(x, 1), prod(size(x)[2:end])))
 
 """
-    model(x)
+    net(x)
 
 Makes class predictions for the data in `x`.
 
@@ -71,36 +35,36 @@ is presently taken to be 1.
 each timestep can be fed into the fully-connected section for classpredictions
 at each timestep.
 """
-function model(x)
-    afterConv = convSection(x)
-    #println("afterconv $(afterConv)")
-    dims = size(afterConv)
-    println(dims)
-    afterConv = reshape(afterConv, (dims[1], prod(dims[2:end])))
-    println(size(afterConv))
-    ŷ = Vector()
-    # ŷ  = gpu(zeros(size(afterConv, 1), 62))
-    ŷ  = denseSection(afterConv[1,:])
-#     display(ŷ )
-#     println()
-    for i in 2:size(afterConv, 1)
-        # push!(ŷ, softmax(denseSection(afterConv[i,:])))
-	# ŷ[i,:] = softmax(denseSection(afterConv[i,:]))
-        afterDense = denseSection(afterConv[i,:])
-#         println(size(afterDense))
-        ŷ  = hcat(ŷ ,afterDense)
-    end
-    #ŷ  = [yI .+ EPS for yI in ŷ ]
-    #ŷ  = [softmax(yI - maximum(yI)) for yI in ŷ ]
-    #ŷ  = softmax.(ŷ )
-    #ŷ  = collect(Iterators.flatten(ŷ ))
-    #ŷ  = gpu(hcat(ŷ))
-    println(size(ŷ ))
-#     exit()
-    return ŷ 
-    #return gpu(collect(Iterators.flatten(ŷ)))
-    #return ŷ 
-end
+net = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
+            x -> maxpool(x, (1,3)),
+            Dropout(0.3),
+            Conv((3, 5), 128=>128, relu; pad=(1, 2)),
+            Dropout(0.3),
+            Conv((3, 5), 128=>128, relu; pad=(1, 2)),
+            Dropout(0.3),
+            Conv((3, 5), 128=>128, relu; pad=(1, 2)),
+            Dropout(0.3),
+            Conv((3, 5), 128=>256, relu, pad=(1, 2)),
+            Dropout(0.3),
+            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Dropout(0.3),
+            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Dropout(0.3),
+            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Dropout(0.3),
+            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Dropout(0.3),
+            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Dropout(0.3),
+            x -> transpose(reshape(x, size(x, 1), prod(size(x)[2:end]))),
+            Dense(3328, 1024, relu),
+            Dropout(0.3),
+            Dense(1024, 1024, relu),
+            Dropout(0.3),
+            Dense(1024, 1024, relu),
+            Dropout(0.3),
+            Dense(1024, 62),
+            softmax) |> gpu
 
 """
     loss(x, y)
@@ -110,10 +74,13 @@ Caclulates the connectionist temporal classification loss for `x` and `y`.
 function loss(x, y)
 #     println("calculating loss")
 #     ms = model.(x)
-    ms = model(x)
+    ms = net(x)
+#     println(typeof(Flux.Tracker.data(ms[1])))
+#     mat = hcat([cpu(Flux.Tracker.data(x)) for x in ms]...)
+#     println(typeof(ms[1]))
     # ls = ctc.(ms, y; gpu=true, eps=true)
 #     ls = ctc.(ms, y)
-    ls, gs = ctc(ms, y)
+    ls, gs = ctc(cpu(Flux.Tracker.data(ms)), y)
     #ls = Vector()
 #     for (m, yI) in zip(ms, y)
 #         push!(ls, ctc(m, yI; gpu=true, eps=true))
@@ -131,16 +98,30 @@ function ctctrain!(loss, data, opt, parameters; cb = () -> ())
     cb = runall(cb)
     opt = runall(opt)
     losses = Vector()
+    counter = 0
     @progress for d in data
         ls, gs, ms = loss(d...)
         push!(losses, mean(ls))
 #         println("l1: $(ls[1])")
-        println("ls: $(ls)")
+#         println("ls: $(ls)")
         println("example loss: $(losses[end])")
         println("mean loss over time: $(mean(losses))")
-        println(gs[62,:])
+#         println("blanks: $(gs[62,:])")
+#         println("silences: $(gs[1,:])")
 #         exit()
 #         println(parameters[end-1].grad)
+        println(typeof(gs))
+        println(typeof(ms[1]))
+        println(size(ms[1]))
+#         for i=1:length(ms)
+# #             println(typeof(ms[i]))
+# #             println(typeof(gs[:,i]))
+# #             for j=1:length(ms[i])
+# #                 @interrupts Flux.Tracker.back!(ms[i][j], gs[j,i])
+# #             end
+#             @interrupts Flux.Tracker.back!(ms[i][1:end], gs[:,i][1:end])
+#         end
+        
         @interrupts Flux.Tracker.back!(ms[1:end], gs[1:end])
 #         println(ms.tracker.grad)
 #         for (p, g) in zip(ms[:,end], gs[:,end])
@@ -151,13 +132,19 @@ function ctctrain!(loss, data, opt, parameters; cb = () -> ())
 #         for i=1:size(ms, 2)
 #             @interrupts Flux.Tracker.back!(ms[:,i], gs[:,i])
 #         end
-        opt()
+#         opt()
         cb() == :stop && break
         ls = nothing
         gs = nothing
         ms = nothing
-        gc()
+        
+        counter += 1
+        if counter == 20
+            opt()
+            counter = 0
+        end
     end
+    opt()
     println("mean epoch loss: $(mean(losses))")
 end
 
@@ -167,29 +154,32 @@ Xs, Ys = readData(TRAINDIR)
 data = collect(zip(Xs, Ys))
 valData = data[1:189]
 # valData = data[1:10] # this when each item is a batch of 20
-trainData = data[190:end]
+trainData = gpu.(data[190:end])
 # data = data[21:end] # batch size = 20
-p = params((convSection, denseSection))
+p = params(net)
 opt = ADAM(p, 10.0^-4)
 println()
 println("Training")
 # Flux.train!(loss, data, opt)
-dataI = 1
 chunkSize = 200
-for i=1:1
+ctctrain!(loss, trainData, opt, p)
+#=for i=1:1
     trainData = data[190:end]
     println("EPOCH $(i)")
     while length(trainData) > chunkSize
-        trainOn = gpu.(trainData[1:550])
+        trainOn = gpu.(trainData[1:chunkSize])
         ctctrain!(loss, trainOn, opt, p)
-        trainData = trainData[501:end]
+        trainData = trainData[chunkSize+1:end]
         trainOn = nothing
         gc()
     end
-    ctctrain!(trainData)
+    if length(trainData) > 0
+        ctctrain!(loss, gpu.(trainData), opt, p)
+    end
+    BSON.@save "net_epoch$(i).bson" net
     print("Validating\r")
-    println("Validation Phoneme Error Rate. $(evaluatePER(gpu.(valData)))")
-end
+    println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
+end=#
 # @epochs 1 ctctrain!(loss, data, opt, p); print("Validating\r"); println("Validation Phoneme Error Rate. $(evaluatePER(valData))")
 # for (x, y) in data
 #     losses = loss(x, y)
