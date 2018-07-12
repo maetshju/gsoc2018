@@ -107,7 +107,7 @@ end
 
 Calculates percent of correct classifications for each input/output in `data`.
 """
-function evaluateFrameAccuracy(data)
+function evaluateFrameAccuracy(model, data)
     correct = Vector()
     for (x, y) in data
         y = indmax.(y)
@@ -123,15 +123,15 @@ end
 
 Evaluates performance by calculating phoneme error rate on `data`
 """
-function evaluatePER(data)
+function evaluatePER(model, data)
     edits = 0
     len = 0
     for (x, y) in data
         y = F(indmax.([y[i,:] for i=1:size(y,1)]), 62)
         ŷ  = model(x)
         ŷ  = indmax.([ŷ[:,i] for i=1:size(ŷ,2)])
-        println(y)
-        println(ŷ )
+#         println(y)
+#         println(ŷ )
         e = lev(y, ŷ)
 	# println("y $(y)")
 	# println("ŷ  $(ŷ )")

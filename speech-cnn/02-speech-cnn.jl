@@ -14,6 +14,7 @@ const TRAINDIR = "train"
 const TESTDIR = "test"
 const EPS = 1e-7
 const BATCHSIZE = 20
+const EPOCHS = 100
 
 println("Building network")
 
@@ -72,29 +73,12 @@ net = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
 Caclulates the connectionist temporal classification loss for `x` and `y`.
 """
 function loss(x, y)
-#     println("calculating loss")
-#     ms = model.(x)
     ms = net(x)
-#     println(typeof(Flux.Tracker.data(ms[1])))
-#     mat = hcat([cpu(Flux.Tracker.data(x)) for x in ms]...)
-#     println(typeof(ms[1]))
-    # ls = ctc.(ms, y; gpu=true, eps=true)
-#     ls = ctc.(ms, y)
     ls, gs = ctc(cpu(Flux.Tracker.data(ms)), y)
-    #ls = Vector()
-#     for (m, yI) in zip(ms, y)
-#         push!(ls, ctc(m, yI; gpu=true, eps=true))
-#     end
-    # println(l)
-    #println("mean loss: $(l/min(50, length(y)))")
-#     println(size(ls))
-#     println(size(gs))
-#     println("mean loss: $(mean(ls))")
-    mean(ls)
     return ls, gs, ms
 end
 
-function ctctrain!(loss, data, opt, parameters; cb = () -> ())
+function ctctrain!(loss, data, opt; cb = () -> ())
     cb = runall(cb)
     opt = runall(opt)
     losses = Vector()
@@ -102,44 +86,17 @@ function ctctrain!(loss, data, opt, parameters; cb = () -> ())
     @progress for d in data
         ls, gs, ms = loss(d...)
         push!(losses, mean(ls))
-#         println("l1: $(ls[1])")
-#         println("ls: $(ls)")
         println("example loss: $(losses[end])")
         println("mean loss over time: $(mean(losses))")
-#         println("blanks: $(gs[62,:])")
-#         println("silences: $(gs[1,:])")
-#         exit()
-#         println(parameters[end-1].grad)
-        println(typeof(gs))
-        println(typeof(ms[1]))
-        println(size(ms[1]))
-#         for i=1:length(ms)
-# #             println(typeof(ms[i]))
-# #             println(typeof(gs[:,i]))
-# #             for j=1:length(ms[i])
-# #                 @interrupts Flux.Tracker.back!(ms[i][j], gs[j,i])
-# #             end
-#             @interrupts Flux.Tracker.back!(ms[i][1:end], gs[:,i][1:end])
-#         end
         
         @interrupts Flux.Tracker.back!(ms[1:end], gs[1:end])
-#         println(ms.tracker.grad)
-#         for (p, g) in zip(ms[:,end], gs[:,end])
-#             @interrupts back!(p, g)
-#         end
-#         println(parameters[end-1].grad)
-#         println(ms.tracker.grad)
-#         for i=1:size(ms, 2)
-#             @interrupts Flux.Tracker.back!(ms[:,i], gs[:,i])
-#         end
-#         opt()
         cb() == :stop && break
         ls = nothing
         gs = nothing
         ms = nothing
         
         counter += 1
-        if counter == 20
+        if counter == BATCHSIZE
             opt()
             counter = 0
         end
@@ -162,13 +119,20 @@ println()
 println("Training")
 # Flux.train!(loss, data, opt)
 chunkSize = 200
-ctctrain!(loss, trainData, opt, p)
+for i=1:EPOCHS
+    println("EPOCH $(i)")
+    ctctrain!(loss, trainData, opt)
+    BSON.@save "soft_net100epochs_epoch$(i).bson" net
+    print("Validating\r")
+    println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
+end
+# ctctrain!(loss, trainData, opt, p)
 #=for i=1:1
     trainData = data[190:end]
     println("EPOCH $(i)")
     while length(trainData) > chunkSize
         trainOn = gpu.(trainData[1:chunkSize])
-        ctctrain!(loss, trainOn, opt, p)
+        ctctrain!(loss, trainOn, opt)
         trainData = trainData[chunkSize+1:end]
         trainOn = nothing
         gc()
@@ -176,7 +140,7 @@ ctctrain!(loss, trainData, opt, p)
     if length(trainData) > 0
         ctctrain!(loss, gpu.(trainData), opt, p)
     end
-    BSON.@save "net_epoch$(i).bson" net
+    BSON.@save "activation_net_epoch$(i).bson" net
     print("Validating\r")
     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
 end=#

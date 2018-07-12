@@ -139,7 +139,7 @@ end
 
 function computeBetasAndGradKernel(probs, labelSize, uttLength,
                                     repeatsInLabel, labelsWithBlanks,
-                                    alphas, beta, output, accum, nllForward, nllBackward,
+                                    alphas, beta, output, accum,
                                     grad, blankLabel)
     
     tid = threadIdx().x
@@ -147,7 +147,7 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
     T = uttLength
     S = 2*L + 1
     repeats = repeatsInLabel
-    logPartition = -nllForward[blockIdx().x]
+#     logPartition = -nllForward[blockIdx().x]
     
     labels = labelsWithBlanks
     alpha = alphas[blockIdx().x]
@@ -352,15 +352,15 @@ function ctc(ŷ, y)
     labels = indmax.([y[i,:] for i=1:size(y,1)])
 #     labels = argmax.([y[i,:] for i=1:size(y,1)])
     z = F(labels, blank)
-    println(ŷ[:,1])
-    println(indmax.([ŷ[:,i] for i=1:size(ŷ,2)]))
+#     println(ŷ[:,1])
+#     println(indmax.([ŷ[:,i] for i=1:size(ŷ,2)]))
 #     println(z)
     z′ = [blank]
     for label in z
         push!(z′, label)
         push!(z′, blank)
     end
-    println("z′ $(z′)")
+#     println("z′ $(z′)")
     T = size(ŷ, 2)
     U′ = 2*length(z) + 1
 #     println("$(T), $(U′)")
@@ -372,13 +372,13 @@ function ctc(ŷ, y)
 #     println(size(alphas))
 #     println(typeof(alphas))
     #ŷ = Flux.Tracker.data(ŷ )
-    ŷ  = CUDAdrv.CuArray(cpu(Flux.Tracker.data(ŷ ) .+ EPS))
+    ŷ  = CUDAdrv.CuArray(ŷ  .+ EPS)
     nRepeats = countRepeats(labels)
 #     println("labels: $(z′)")
     
     
-    alphalikelihoods = CUDAdrv.CuArray{Float32}(size(ŷ,2))
-    betalikelihoods = similar(alphalikelihoods)
+#     alphalikelihoods = CUDAdrv.CuArray{Float32}(size(ŷ,2))
+#     betalikelihoods = similar(alphalikelihoods)
 
 #     println("beginning alphas computation")
     @cuda (1, U′) computeAlphaKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, blank)
@@ -399,7 +399,7 @@ function ctc(ŷ, y)
 #     println("beginning betas computation")
     output = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,2) * U′)])
     accum = CUDAdrv.CuArray([-Inf32 for x in 1:length(ŷ)])
-    @cuda (1, U′) computeBetasAndGradKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, alphalikelihoods, betalikelihoods, grads, blank)
+    @cuda (1, U′) computeBetasAndGradKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, grads, blank)
 #     @cuda threads=U′ computeBetasAndGradKernel(ŷ, length(z), size(ŷ,1), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, alphalikelihoods, betalikelihoods, grads, blank)
 #     println("betas computed")
 
@@ -421,8 +421,7 @@ function ctc(ŷ, y)
 #     println(logsum(ls[1,:]))
 #     l = logsum.([ls[x,:] for x in 1:size(ls,1)])
 #     println(any(isinf, mapslices(logsum, ls, 1)))
-    ls = mapslices(logsum, ls, 2)
-    ls = ls .* -1
+    ls = -1 .* mapslices(logsum, ls, 2)
 #     gs = permutedims(reshape(Array(grads), size(ŷ,1), size(ŷ,2)), [2,1])
     gs = reshape(Array(grads), size(ŷ,1), size(ŷ,2))
 #     println(any(isinf, Array(ŷ)))
@@ -433,7 +432,7 @@ function ctc(ŷ, y)
 #     println(exp.(Array(accum)[(end-62):end]))
 #     println(gs[56,:])
 #     println(size(gs))
-    accum = reshape(Array(accum), size(ŷ,1), size(ŷ,2))
+#     accum = reshape(Array(accum), size(ŷ,1), size(ŷ,2))
 #     println(any(isinf, accum))
 #     println("accum")
 #     println(size(accum))
@@ -441,7 +440,7 @@ function ctc(ŷ, y)
 #     println(accum[1,:])
 #     print("output 1: ")
 #     println("accum class 9 $(accum[9,:])")
-    output = reshape(Array(output), U′, T)'
+#     output = reshape(Array(output), U′, T)'
 #     println(output[1,:])
 #     println("output 1: $(output[1,:])")
 #     println("output 2: $(output[2,:])")
@@ -453,11 +452,11 @@ function ctc(ŷ, y)
 #     println("output end-2: $(output[end-2,:])")
 #     println("output end-1: $(output[end-1,:])")
 #     println("ouptut class 9: $(output[:,9])")
-    alpha = reshape(Array(alphas), U′, T)'
+#     alpha = reshape(Array(alphas), U′, T)'
 #     println("alpha start: $(alpha[1,:])")
 #     println("alpha start 2: $(alpha[2,:])")
 #     println("alpha end-1: $(alpha[end-1,:])")
-    beta = reshape(Array(betas), U′, T)'
+#     beta = reshape(Array(betas), U′, T)'
 #     println("beta start: $(beta[1,:])")
 #     println("beta end-1: $(beta[end-1,:])")
 #     println("grads")
