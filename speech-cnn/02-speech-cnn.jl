@@ -14,7 +14,8 @@ const TRAINDIR = "train"
 const TESTDIR = "test"
 const EPS = 1e-7
 const BATCHSIZE = 20
-const EPOCHS = 100
+const ADAM_EPOCHS = 10
+const SGD_EPOCHS = 20
 
 println("Building network")
 
@@ -65,7 +66,7 @@ net = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
             Dense(1024, 1024, relu),
             Dropout(0.3),
             Dense(1024, 62),
-            softmax) |> gpu
+            logsoftmax) |> gpu
 
 """
     loss(x, y)
@@ -74,6 +75,7 @@ Caclulates the connectionist temporal classification loss for `x` and `y`.
 """
 function loss(x, y)
     ms = net(x)
+#     println("output 1: $(ms[1,:])")
     ls, gs = ctc(cpu(Flux.Tracker.data(ms)), y)
     return ls, gs, ms
 end
@@ -118,45 +120,34 @@ opt = ADAM(p, 10.0^-4)
 println()
 println("Training")
 # Flux.train!(loss, data, opt)
-chunkSize = 200
-for i=1:EPOCHS
+# println("EPOCH 1")
+# ctctrain!(loss, trainData, opt)
+for i=1:ADAM_EPOCHS
     println("EPOCH $(i)")
-    ctctrain!(loss, trainData, opt)
-    BSON.@save "soft_net100epochs_epoch$(i).bson" net
+    ctctrain!(loss, shuffle(trainData), opt)
+    BSON.@save "soft_net30epochs_adamepoch$(i).bson" net
     print("Validating\r")
     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
+    valLosses = Vector()
+    for d in shuffle(valData)
+        append!(valLosses, loss(d...)[1])
+    end
+    println("Mean validation loss: $(mean(valLosses))")
 end
-# ctctrain!(loss, trainData, opt, p)
-#=for i=1:1
-    trainData = data[190:end]
+println("Starting ADAM5")
+opt= ADAM(p, 10.0^-5)
+for i=1:SGD_EPOCHS
     println("EPOCH $(i)")
-    while length(trainData) > chunkSize
-        trainOn = gpu.(trainData[1:chunkSize])
-        ctctrain!(loss, trainOn, opt)
-        trainData = trainData[chunkSize+1:end]
-        trainOn = nothing
-        gc()
-    end
-    if length(trainData) > 0
-        ctctrain!(loss, gpu.(trainData), opt, p)
-    end
-    BSON.@save "activation_net_epoch$(i).bson" net
+    ctctrain!(loss, shuffle(trainData), opt)
+    BSON.@save "soft_net30epochs_sgdepoch$(i).bson" net
     print("Validating\r")
-    println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
-end=#
-# @epochs 1 ctctrain!(loss, data, opt, p); print("Validating\r"); println("Validation Phoneme Error Rate. $(evaluatePER(valData))")
-# for (x, y) in data
-#     losses = loss(x, y)
-#     len = length(losses)
-#     for (i, l) in enumerate(losses)
-#         print("$(i)/$(len)\r")
-#         back!(l)
-#         opt()
-#     end
-#     println("loss $(mean(losses))")
-# end
-# change out of training mode so dropout isn't used during evaluation
-# testmode!(model, false)
+#     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
+    valLosses = Vector()
+    for d in shuffle(valData)
+        append!(valLosses, loss(d...)[1])
+    end
+    println("Mean validation loss: $(mean(valLosses))")
+end
 end
 
 main()
