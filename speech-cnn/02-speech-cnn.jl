@@ -1,5 +1,5 @@
 using Flux
-using Flux: relu, crossentropy, logitcrossentropy, @epochs
+using Flux: relu, crossentropy, logitcrossentropy, @epochs, testmode!
 using Flux.Tracker: back!
 using Flux.Optimise: runall, @interrupts, SGD
 # using NNlib: σ_stable, logsoftmax
@@ -99,6 +99,7 @@ function ctctrain!(loss, data, opt; cb = () -> ())
         
         counter += 1
         if counter == BATCHSIZE
+#             clamp!.(params(m), -20, 20)
             opt()
             counter = 0
         end
@@ -111,7 +112,7 @@ function main()
 println("Gathering data")
 Xs, Ys = readData(TRAINDIR)
 data = collect(zip(Xs, Ys))
-valData = data[1:189]
+valData = gpu.(data[1:189])
 # valData = data[1:10] # this when each item is a batch of 20
 trainData = gpu.(data[190:end])
 # data = data[21:end] # batch size = 20
@@ -126,13 +127,15 @@ for i=1:ADAM_EPOCHS
     println("EPOCH $(i)")
     ctctrain!(loss, shuffle(trainData), opt)
     BSON.@save "soft_net30epochs_adamepoch$(i).bson" net
+    testmode!(net)
     print("Validating\r")
-    println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
+#     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
     valLosses = Vector()
     for d in shuffle(valData)
         append!(valLosses, loss(d...)[1])
     end
     println("Mean validation loss: $(mean(valLosses))")
+    testmode!(net, false)
 end
 println("Starting ADAM5")
 opt= ADAM(p, 10.0^-5)
@@ -141,12 +144,14 @@ for i=1:SGD_EPOCHS
     ctctrain!(loss, shuffle(trainData), opt)
     BSON.@save "soft_net30epochs_sgdepoch$(i).bson" net
     print("Validating\r")
+    testmode!(net)
 #     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
     valLosses = Vector()
     for d in shuffle(valData)
         append!(valLosses, loss(d...)[1])
     end
     println("Mean validation loss: $(mean(valLosses))")
+    testmode!(net, false)
 end
 end
 

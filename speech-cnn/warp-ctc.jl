@@ -87,7 +87,8 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
     
     i = tid
     while i <= last - start
-        alpha[start + i] = CUDAnative.log(probs[labels[start + i]])
+#         alpha[start + i] = CUDAnative.log(probs[labels[start + i]])
+        alpha[start + i] = probs[labels[start + i]]
         i += blockDim().x
     end
 
@@ -105,7 +106,8 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
         
         if tid == 1 && !(1 < S - 2*(T-t) - 1)
             if start == 0
-                alpha[startCurRow + 1] = CUDAnative.log(probs[startProbCol + blankLabel]) + alpha[startPrevRow + 1]
+#                 alpha[startCurRow + 1] = CUDAnative.log(probs[startProbCol + blankLabel]) + alpha[startPrevRow + 1]
+                alpha[startCurRow + 1] = probs[startProbCol + blankLabel] + alpha[startPrevRow + 1]
             elseif start == 1
                 alpha[startCurRow + 1] = alpha[startPrevRow + 1]
             end
@@ -126,7 +128,8 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
             if idx < S - 2*(T-t) - 1
                 alpha[idx + startCurRow] = -Inf32
             else
-                alpha[startCurRow + idx] = prevSum + CUDAnative.log(probs[startProbCol + labels[idx]])
+#                 alpha[startCurRow + idx] = prevSum + CUDAnative.log(probs[startProbCol + labels[idx]])
+                alpha[startCurRow + idx] = prevSum + probs[startProbCol + labels[idx]]
             end
         
             idx += blockDim().x
@@ -212,7 +215,8 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
 #         s = - s
 #         grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
 #         grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
-        grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
+#         grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
+        grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + probs[startProbRow + idx]))
 #         grad[startProbRow + idx] = CUDAnative.log(probs[startProbRow + idx])
         idx += blockDim().x
     end
@@ -242,7 +246,8 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
                 if idx > 2*t
                     beta[idx + startCurRow] = -Inf32
                 else
-                    beta[idx + startCurRow] = nextSum + CUDAnative.log(probs[startProbCol + labels[idx]])
+#                     beta[idx + startCurRow] = nextSum + CUDAnative.log(probs[startProbCol + labels[idx]])
+                    beta[idx + startCurRow] = nextSum + probs[startProbCol + labels[idx]]
                 end
 #                 beta[idx + startCurRow] = t
                 
@@ -253,7 +258,8 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             
 #             if tid == 1 && last == S && ! (S > 2*t)
             if tid == 1 && last == S
-                beta[startCurRow + S] = beta[startNextRow + S] + CUDAnative.log(probs[startProbCol + blankLabel])
+#                 beta[startCurRow + S] = beta[startNextRow + S] + CUDAnative.log(probs[startProbCol + blankLabel])
+                beta[startCurRow + S] = beta[startNextRow + S] + probs[startProbCol + blankLabel]
             end
             
             sync_threads()
@@ -310,7 +316,8 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
 #         grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
 #             grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
             # TODO: this needs to be checked more thoroughly
-            grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
+#             grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
+            grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + probs[startProbRow + idx]))
 #             grad[startProbRow + idx] = accum[startProbRow + idx]
             idx += blockDim().x
         end
@@ -372,7 +379,9 @@ function ctc(ŷ, y)
 #     println(size(alphas))
 #     println(typeof(alphas))
     #ŷ = Flux.Tracker.data(ŷ )
-    ŷ  = CUDAdrv.CuArray(ŷ  .+ EPS)
+#     ŷ  = clamp!(ŷ , Float32(0.01) / 61, 0.99)
+#     ŷ  = CUDAdrv.CuArray(map(x -> x == 1 ? x - EPS : x + EPS, ŷ ))
+    ŷ  = CUDAdrv.CuArray(ŷ )
     nRepeats = countRepeats(labels)
 #     println("labels: $(z′)")
     

@@ -126,10 +126,11 @@ Evaluates performance by calculating phoneme error rate on `data`
 function evaluatePER(model, data)
     edits = 0
     len = 0
-    for (x, y) in data
+    for (i, (x, y)) in enumerate(data)
         y = F(indmax.([y[i,:] for i=1:size(y,1)]), 62)
         ŷ  = model(x)
         ŷ  = indmax.([ŷ[:,i] for i=1:size(ŷ,2)])
+        println("prediction $(i): $(ŷ )")
 #         println(y)
 #         println(ŷ )
         e = lev(y, ŷ)
