@@ -67,6 +67,21 @@ net = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
             Dropout(0.3),
             Dense(1024, 62),
             logsoftmax) |> gpu
+            
+            
+# function model(x)
+#     println("sending to conv")
+#     afterConv = convSection(x)
+#     exit()
+#     predictions = Vector()
+#     for i=1:size(x, 4)
+#         preDense = x[:, :, :, i]
+#         preDense = transpose(preDense, size(preDense, 1), prod(size(preDense)[2:end]))
+#         afterDense = denseSection(x)
+#         push!(predictions, afterDense)
+#     end
+#     return predictions
+# end
 
 """
     loss(x, y)
@@ -85,6 +100,17 @@ function ctctrain!(loss, data, opt; cb = () -> ())
     opt = runall(opt)
     losses = Vector()
     counter = 0
+#     idx = 1
+#     lenData = length(data)
+#     while idx <= lenData
+#         batch = data[idx:min(lenData, idx+(BATCHSIZE-1))]
+#         
+#         batchX = gpu(cat(4, [x for (x, y) in batch]...))
+#         println(size(batchX))
+#         batchY = [y for (x, y) in batch]
+#         ls, gs, ms = loss(batchX, batchY)
+#         idx += BATCHSIZE
+#     end
     @progress for d in data
         ls, gs, ms = loss(d...)
         push!(losses, mean(ls))
@@ -99,7 +125,7 @@ function ctctrain!(loss, data, opt; cb = () -> ())
         
         counter += 1
         if counter == BATCHSIZE
-#             clamp!.(params(m), -20, 20)
+#             clamp!.(params(model), -20, 20)
             opt()
             counter = 0
         end
@@ -114,7 +140,17 @@ Xs, Ys = readData(TRAINDIR)
 data = collect(zip(Xs, Ys))
 valData = gpu.(data[1:189])
 # valData = data[1:10] # this when each item is a batch of 20
-trainData = gpu.(data[190:end])
+trainData = data[190:end]
+# idx = 1
+# lenData = length(trainData)
+# longestTimeSteps = maximum([size(x, 1) for (x, y) in trainData])
+# for (i, (x, y)) in enumerate(trainData)
+#     stepsToAdd = longestTimeSteps - size(x, 1)
+#     x = vcat(x, zeros(stepsToAdd, size(x)[2:end]...))
+#     trainData[i] = (x, y)
+#     # y doesn't matter because they all end in silence
+# end
+trainData = gpu.(trainData)
 # data = data[21:end] # batch size = 20
 p = params(net)
 opt = ADAM(p, 10.0^-4)
@@ -126,7 +162,7 @@ println("Training")
 for i=1:ADAM_EPOCHS
     println("EPOCH $(i)")
     ctctrain!(loss, shuffle(trainData), opt)
-    BSON.@save "soft_net30epochs_adamepoch$(i).bson" net
+    BSON.@save "soft_net_clamp30epochs_adamepoch$(i).bson" net
     testmode!(net)
     print("Validating\r")
 #     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
@@ -142,7 +178,7 @@ opt= ADAM(p, 10.0^-5)
 for i=1:SGD_EPOCHS
     println("EPOCH $(i)")
     ctctrain!(loss, shuffle(trainData), opt)
-    BSON.@save "soft_net30epochs_sgdepoch$(i).bson" net
+    BSON.@save "soft_net_clamp30epochs_sgdepoch$(i).bson" net
     print("Validating\r")
     testmode!(net)
 #     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
