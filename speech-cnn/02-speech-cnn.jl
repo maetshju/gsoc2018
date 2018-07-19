@@ -14,8 +14,8 @@ const TRAINDIR = "train"
 const TESTDIR = "test"
 const EPS = 1e-7
 const BATCHSIZE = 20
-const ADAM_EPOCHS = 10
-const SGD_EPOCHS = 20
+const ADAM_EPOCHS = 20
+const SGD_EPOCHS = 10
 
 println("Building network")
 
@@ -37,26 +37,26 @@ is presently taken to be 1.
 each timestep can be fed into the fully-connected section for classpredictions
 at each timestep.
 """
-net = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
+net = Chain(Conv((5, 3), 3=>128, relu; pad=(2, 1)),
             x -> maxpool(x, (1,3)),
             Dropout(0.3),
-            Conv((3, 5), 128=>128, relu; pad=(1, 2)),
+            Conv((5, 3), 128=>128, relu; pad=(2, 1)),
             Dropout(0.3),
-            Conv((3, 5), 128=>128, relu; pad=(1, 2)),
+            Conv((5, 3), 128=>128, relu; pad=(2, 1)),
             Dropout(0.3),
-            Conv((3, 5), 128=>128, relu; pad=(1, 2)),
+            Conv((5, 3), 128=>128, relu; pad=(2, 1)),
             Dropout(0.3),
-            Conv((3, 5), 128=>256, relu, pad=(1, 2)),
+            Conv((5, 3), 128=>256, relu, pad=(2, 1)),
             Dropout(0.3),
-            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Conv((5, 3), 256=>256, relu, pad=(2, 1)),
             Dropout(0.3),
-            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Conv((5, 3), 256=>256, relu, pad=(2, 1)),
             Dropout(0.3),
-            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Conv((5, 3), 256=>256, relu, pad=(2, 1)),
             Dropout(0.3),
-            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Conv((5, 3), 256=>256, relu, pad=(2, 1)),
             Dropout(0.3),
-            Conv((3, 5), 256=>256, relu, pad=(1, 2)),
+            Conv((5, 3), 256=>256, relu, pad=(2, 1)),
             Dropout(0.3),
             x -> transpose(reshape(x, size(x, 1), prod(size(x)[2:end]))),
             Dense(3328, 1024, relu),
@@ -82,7 +82,6 @@ net = Chain(Conv((3, 5), 3=>128, relu; pad=(1, 2)),
 #     end
 #     return predictions
 # end
-
 """
     loss(x, y)
 
@@ -162,10 +161,10 @@ println("Training")
 for i=1:ADAM_EPOCHS
     println("EPOCH $(i)")
     ctctrain!(loss, shuffle(trainData), opt)
-    BSON.@save "soft_net_clamp30epochs_adamepoch$(i).bson" net
+    BSON.@save "adam2sgd10_adamepoch$(i).bson" net
     testmode!(net)
     print("Validating\r")
-#     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
+    println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
     valLosses = Vector()
     for d in shuffle(valData)
         append!(valLosses, loss(d...)[1])
@@ -173,15 +172,15 @@ for i=1:ADAM_EPOCHS
     println("Mean validation loss: $(mean(valLosses))")
     testmode!(net, false)
 end
-println("Starting ADAM5")
-opt= ADAM(p, 10.0^-5)
+println("Starting SGD")
+opt= SGD(p, 10.0^-5)
 for i=1:SGD_EPOCHS
     println("EPOCH $(i)")
     ctctrain!(loss, shuffle(trainData), opt)
-    BSON.@save "soft_net_clamp30epochs_sgdepoch$(i).bson" net
+    BSON.@save "adam2sgd10_sgdepoch$(i).bson" net
     print("Validating\r")
     testmode!(net)
-#     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
+    println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
     valLosses = Vector()
     for d in shuffle(valData)
         append!(valLosses, loss(d...)[1])
