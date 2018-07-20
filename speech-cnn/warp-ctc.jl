@@ -3,6 +3,7 @@
 # paper: https://arxiv.org/pdf/1512.02595.pdf
 
 using CUDAnative, CUDAdrv, Flux
+using Flux.Tracker: @grad
 const EPS = 1e-7
 
 function log_plus_f(p1, p2)
@@ -480,4 +481,11 @@ function ctc(ŷ, y)
 #     println()
 #     display(reshape(Array(accum), 4, 4))
     return vec(ls), gs
+end
+
+ctc(ŷ::TrackedArray, y::AbstractArray) = Flux.Tracker.track(ctc, ŷ, y)
+
+@grad function ctc(ŷ, y)
+    ls, gs = ctc(Flux.Tracker.data(cpu(ŷ)), y)
+    return mean(ls), Δ -> (gpu(gs), Δ)
 end

@@ -90,8 +90,10 @@ Caclulates the connectionist temporal classification loss for `x` and `y`.
 function loss(x, y)
     ms = net(x)
 #     println("output 1: $(ms[1,:])")
-    ls, gs = ctc(cpu(Flux.Tracker.data(ms)), y)
-    return ls, gs, ms
+#     ls, gs = ctc(cpu(Flux.Tracker.data(ms)), y)
+    l = ctc(ms, y)
+#     return ls, gs, ms
+    return l
 end
 
 function ctctrain!(loss, data, opt; cb = () -> ())
@@ -111,19 +113,25 @@ function ctctrain!(loss, data, opt; cb = () -> ())
 #         idx += BATCHSIZE
 #     end
     @progress for d in data
-        ls, gs, ms = loss(d...)
-        push!(losses, mean(ls))
+#         ls, gs, ms = loss(d...)
+        l = loss(d...)
+#         push!(losses, mean(ls))
+        push!(losses, Flux.Tracker.data(l))
         println("example loss: $(losses[end])")
         println("mean loss over time: $(mean(losses))")
+#         println(l.tracker.f)
         
-        @interrupts Flux.Tracker.back!(ms[1:end], gs[1:end])
+#         @interrupts Flux.Tracker.back!(ms[1:end], gs[1:end])
+        @interrupts Flux.Tracker.back!(l)
         cb() == :stop && break
+        l = nothing
         ls = nothing
         gs = nothing
         ms = nothing
         
         counter += 1
         if counter == BATCHSIZE
+#             println("1st example loss: $(mean(loss(data[1]...)[1]))")
 #             clamp!.(params(model), -20, 20)
             opt()
             counter = 0
@@ -161,7 +169,8 @@ println("Training")
 for i=1:ADAM_EPOCHS
     println("EPOCH $(i)")
     ctctrain!(loss, shuffle(trainData), opt)
-    BSON.@save "adam2sgd10_adamepoch$(i).bson" net
+#     BSON.@save "mel_rmsprop20sgd10_adamepoch$(i).bson" net
+    BSON.@save "trackedloss_poch$(i).bson" net
     testmode!(net)
     print("Validating\r")
     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
@@ -172,22 +181,22 @@ for i=1:ADAM_EPOCHS
     println("Mean validation loss: $(mean(valLosses))")
     testmode!(net, false)
 end
-println("Starting SGD")
-opt= SGD(p, 10.0^-5)
-for i=1:SGD_EPOCHS
-    println("EPOCH $(i)")
-    ctctrain!(loss, shuffle(trainData), opt)
-    BSON.@save "adam2sgd10_sgdepoch$(i).bson" net
-    print("Validating\r")
-    testmode!(net)
-    println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
-    valLosses = Vector()
-    for d in shuffle(valData)
-        append!(valLosses, loss(d...)[1])
-    end
-    println("Mean validation loss: $(mean(valLosses))")
-    testmode!(net, false)
-end
+# println("Starting SGD")
+# opt= SGD(p, 10.0^-5)
+# for i=1:SGD_EPOCHS
+#     println("EPOCH $(i)")
+#     ctctrain!(loss, shuffle(trainData), opt)
+#     BSON.@save "mel_rmsprop20sgd10_sgdepoch$(i).bson" net
+#     print("Validating\r")
+#     testmode!(net)
+#     println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
+#     valLosses = Vector()
+#     for d in shuffle(valData)
+#         append!(valLosses, loss(d...)[1])
+#     end
+#     println("Mean validation loss: $(mean(valLosses))")
+#     testmode!(net, false)
+# end
 end
 
 main()
