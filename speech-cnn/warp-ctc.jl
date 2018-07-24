@@ -10,11 +10,6 @@ function log_plus_f(p1, p2)
     
     isinf(p1) && return p2
     isinf(p2) && return p1
-#     if isinf(p1)
-#         return p2
-#     elseif isinf(p2)
-#         return p1
-#     end
 
     # always want the greater number on the left in the exponentiation;
     # the magnitude difference may end up making the number very positive
@@ -25,7 +20,6 @@ function log_plus_f(p1, p2)
         p1, p2 = p2, p1
     end
 
-#     s = p1 + CUDAnative.log(1+CUDAnative.exp(p2 - p1))
     return p1 + CUDAnative.log(1+CUDAnative.exp(p2 - p1))
 end
 
@@ -37,10 +31,6 @@ function logadd(a, b)
     
     if a < b
         a, b = b, a
-    end
-    
-    if isnan(a) || isnan(b)
-        error("NAN HAPPENED IN LOGADD")
     end
     
     return a + log(1+exp(b-a))
@@ -81,7 +71,6 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
     tid = threadIdx().x
     L = labelSize
     T = uttLength
-#     S = 2*L + 1
     S = length(labelsWithBlanks)
     
     if L + repeats > T
@@ -95,15 +84,9 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
     
     i = tid
     while i <= last - start
-#         alpha[start + i] = CUDAnative.log(probs[labels[start + i]])
         alpha[start + i] = probs[labels[start + i]]
         i += blockDim().x
     end
-
-#     if tid == 1
-#         alpha[1] = CUDAnative.log(probs[labels[1]])
-#         alpha[2] = CUDAnative.log(probs[labels[2]])
-#     end
     
     sync_threads()
     
@@ -114,7 +97,6 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
         
         if tid == 1 && !(1 < S - 2*(T-t) - 1)
             if start == 0
-#                 alpha[startCurRow + 1] = CUDAnative.log(probs[startProbCol + blankLabel]) + alpha[startPrevRow + 1]
                 alpha[startCurRow + 1] = probs[startProbCol + blankLabel] + alpha[startPrevRow + 1]
             elseif start == 1
                 alpha[startCurRow + 1] = alpha[startPrevRow + 1]
@@ -136,7 +118,6 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
             if idx < S - 2*(T-t) - 1
                 alpha[idx + startCurRow] = -Inf32
             else
-#                 alpha[startCurRow + idx] = prevSum + CUDAnative.log(probs[startProbCol + labels[idx]])
                 alpha[startCurRow + idx] = prevSum + probs[startProbCol + labels[idx]]
             end
         
@@ -158,11 +139,9 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
     T = uttLength
     S = 2*L + 1
     repeats = repeatsInLabel
-#     logPartition = -nllForward[blockIdx().x]
     
     labels = labelsWithBlanks
     alpha = alphas[blockIdx().x]
-#     output = similar(alphas)
     NT = blockDim().x
     
     # From Modern GPU documentation
@@ -220,12 +199,13 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         for i=1:S
             s = log_plus_f(s, output[startOutputRow + i])
         end
-#         s = - s
-#         grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
+        
+        # ∂L/∂a (where a is activation before softmax)
 #         grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
+        # ∂L/∂y (where y is network output with regular softmax)
 #         grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
+        # ∂L/∂y (where y is network output with logsoftmax)
         grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + probs[startProbRow + idx]))
-#         grad[startProbRow + idx] = CUDAnative.log(probs[startProbRow + idx])
         idx += blockDim().x
     end
     
@@ -238,7 +218,6 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         startNextRow = t*S
         startProbCol = t * div(length(probs), T)
 
-        # TODO: should this be t < T?
         if t < T
             
             idx = tid
@@ -250,11 +229,9 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
                     nextSum = log_plus_f(nextSum, beta[startNextRow + idx + 2])
                 end
                 
-#                 beta[i] = nextSum + CUDAnative.log(probs[startProbCol + labels[idx]])
                 if idx > 2*t
                     beta[idx + startCurRow] = -Inf32
                 else
-#                     beta[idx + startCurRow] = nextSum + CUDAnative.log(probs[startProbCol + labels[idx]])
                     beta[idx + startCurRow] = nextSum + probs[startProbCol + labels[idx]]
                 end
 #                 beta[idx + startCurRow] = t
@@ -264,9 +241,7 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         
             sync_threads()
             
-#             if tid == 1 && last == S && ! (S > 2*t)
             if tid == 1 && last == S
-#                 beta[startCurRow + S] = beta[startNextRow + S] + CUDAnative.log(probs[startProbCol + blankLabel])
                 beta[startCurRow + S] = beta[startNextRow + S] + probs[startProbCol + blankLabel]
             end
             
@@ -281,17 +256,10 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             sync_threads()
         end
         
-#         idx = tid
-#         while idx <= div(length(accum), T)
-#             startAccRow = (t-1) * div(length(accum), T)
-#             accum[startAccRow + idx] = -Inf32
-#             idx += blockDim().x
-#         end
         
         sync_threads()
 #         
         if tid == 1
-#         while idx <= T
         
             startAccRow = (t-1) * div(length(accum), T)
             startOutputRow = (t-1) * S
@@ -300,13 +268,6 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
                 labelIdx = labels[i]
                 accum[startAccRow + labelIdx] = log_plus_f(accum[startAccRow + labelIdx], output[startOutputRow + i])
             end
-            
-#             labelIdx = labels[idx]
-            
-#             accum[startAccRow + labelIdx] = idx
-#             log_plus_f(accum[startAccRow + labelIdx], output[startOutputRow + idx])
-            
-#             idx += blockIdx().x
         end
         
         sync_threads()
@@ -321,30 +282,16 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             for i=1:S
                 s = log_plus_f(s, output[startOutputRow + i])
             end
-#         grad[startProbRow + idx] = probs[startProbRow + idx] - s * CUDAnative.exp(accum[startProbRow + idx])
-#             grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
-            # TODO: this needs to be checked more thoroughly
-#             grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
+            # ∂L/∂a (where a is activation before softmax)
+#         grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
+            # ∂L/∂y (where y is network output with regular softmax)
+#         grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
+            # ∂L/∂y (where y is network output with logsoftmax)
             grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + probs[startProbRow + idx]))
-#             grad[startProbRow + idx] = accum[startProbRow + idx]
             idx += blockDim().x
         end
         
         sync_threads()
-        
-#         if t == 1 && tid == 1
-#             loglike = -Inf32
-#             val = 2 * (L-1) + 1 - (L + repeats == T ? 1 : 0)
-#             
-#             start = -val * (L != 0) + start
-#             last = -val * (L != 0) + last
-# #         
-#             for i=start:last
-#                 loglike = log_plus_f(loglike, beta[i])
-#             end
-#         
-#             nllBackward[blockIdx().x] = -loglike
-#         end
         
         t -= 1
         sync_threads()
@@ -359,151 +306,43 @@ end
 function ctc(ŷ, y)
 
     blank = Int32(size(ŷ, 1))
-#     exit()
-#     println(blank)
-#     println(size(ŷ))
-#     blank = 62
-#     blank = 4
     labels = indmax.([y[i,:] for i=1:size(y,1)])
-#     labels = argmax.([y[i,:] for i=1:size(y,1)])
     z = F(labels, blank)
-#     println(ŷ[:,1])
-#     println(indmax.([ŷ[:,i] for i=1:size(ŷ,2)]))
-#     println(z)
     z′ = [blank]
     for label in z
         push!(z′, label)
         push!(z′, blank)
     end
-#     println("z′ $(z′)")
     T = size(ŷ, 2)
     U′ = 2*length(z) + 1
-#     println("$(T), $(U′)")
-#     alphas = Flux.TrackedArray([-Inf for x in 1:(size(ŷ,1) * U′)])
     alphas = gpu([-Inf32 for x in 1:(size(ŷ,2) * U′)])
     betas = gpu([-Inf32 for x in 1:(size(ŷ,2) * U′)])
-#     println()
-#     println(ŷ )
-#     println(size(alphas))
-#     println(typeof(alphas))
-    #ŷ = Flux.Tracker.data(ŷ )
-#     ŷ  = clamp!(ŷ , Float32(0.01) / 61, 0.99)
-#     ŷ  = CUDAdrv.CuArray(map(x -> x == 1 ? x - EPS : x + EPS, ŷ ))
-#         ŷ  = CUDAdrv.CuArray(ŷ )
-#     println("labels: $(z′)")
     
     nRepeats = countRepeats(labels)
-    
-#     alphalikelihoods = CUDAdrv.CuArray{Float32}(size(ŷ,2))
-#     betalikelihoods = similar(alphalikelihoods)
 
-#     println("beginning alphas computation")
     @cuda (1, U′) computeAlphaKernel(ŷ, length(z), size(ŷ,2), nRepeats, gpu(z), CUDAdrv.CuArray(z′), alphas, blank)
-#     @cuda threads=U′ computeAlphaKernel(ŷ, length(z), size(ŷ,1), nRepeats, CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, alphalikelihoods, blank)
-#     
-# #     @cuda threads=U′ alpha2kernel(ŷ, alphas, T, U′, alphalikelihoods, CUDAdrv.CuArray(z′), blank)
-# 
-#     println("alphas done")
+    # Julia 0.7 and updated CUDAnative function call
+#     @cuda threads=U′ computeAlphaKernel(ŷ, length(z), size(ŷ,2), nRepeats, gpu(z), CUDAdrv.CuArray(z′), alphas, blank)
     grads = gpu([-Inf32 for x in 1:length(ŷ)])
-# 
-#     println("extracting alphas")
-#     println(Array(alphas))
-#     display(reshape(Array(alphas), 7, 4)')
-#     println()
-#     println("alphas extracted")
-    
-#     println(typeof(betas))
-#     println("beginning betas computation")
     output = gpu([-Inf32 for x in 1:(size(ŷ,2) * U′)])
     accum = gpu([-Inf32 for x in 1:length(ŷ)])
     
     @cuda (1, U′) computeBetasAndGradKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, grads, blank)
-#     @cuda threads=U′ computeBetasAndGradKernel(ŷ, length(z), size(ŷ,1), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, alphalikelihoods, betalikelihoods, grads, blank)
-#     println("betas computed")
-
-    # TODO: these produce an illegal memory access
-#     println(size(betas))
-#     display(Array(reshape(Array(betas), 7, 4)'))
-#     println()
-#     display(Array(reshape(Array(output), 7, 4)'))
-#     println()
-#     println(Array(grads))
-#     display(Array(reshape(Array(grads), 4, 4)'))
-#     println()
+    # Julia 0.7 and updated CUDAnative function call
+#     @cuda threads=U′ computeBetasAndGradKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, grads, blank)
     
     ls = Array(reshape(Array(output), U′, T)')
-#     display(ls)
-#     println()
-#     println(typeof(ls))
-#     println(ls[1,:])
-#     println(logsum(ls[1,:]))
-#     l = logsum.([ls[x,:] for x in 1:size(ls,1)])
-#     println(any(isinf, mapslices(logsum, ls, 1)))
     ls = -1 .* mapslices(logsum, ls, 2)
-#     gs = permutedims(reshape(Array(grads), size(ŷ,1), size(ŷ,2)), [2,1])
     gs = reshape(Array(grads), size(ŷ,1), size(ŷ,2))
-#     println(any(isinf, Array(ŷ)))
-#     println(any(x -> x == -Inf32, exp.(Array(accum))))
-#     print("Is inf32? ")
-#     println(any(x -> x == Inf32, exp.(Array(accum))))
-#     println(any(isinf, gs))
-#     println(exp.(Array(accum)[(end-62):end]))
-#     println(gs[56,:])
-#     println(size(gs))
-#     accum = reshape(Array(accum), size(ŷ,1), size(ŷ,2))
-#     println(any(isinf, accum))
-#     println("accum")
-#     println(size(accum))
-#     println("accum")
-#     println(accum[1,:])
-#     print("output 1: ")
-#     println("accum class 9 $(accum[9,:])")
-#     output = reshape(Array(output), U′, T)'
-#     println(output[1,:])
-#     println("output 1: $(output[1,:])")
-#     println("output 2: $(output[2,:])")
-#     println("output 3: $(output[3,:])")
-#     println("output 4: $(output[4,:])")
-#     println("output 5: $(output[5,:])")
-#     println("output end-4: $(output[end-4,:])")
-#     println("output end-3: $(output[end-3,:])")
-#     println("output end-2: $(output[end-2,:])")
-#     println("output end-1: $(output[end-1,:])")
-#     println("ouptut class 9: $(output[:,9])")
-#     alpha = reshape(Array(alphas), U′, T)'
-#     println("alpha start: $(alpha[1,:])")
-#     println("alpha start 2: $(alpha[2,:])")
-#     println("alpha end-1: $(alpha[end-1,:])")
-#     beta = reshape(Array(betas), U′, T)'
-#     println("beta start: $(beta[1,:])")
-#     println("beta end-1: $(beta[end-1,:])")
-#     println("grads")
-#     println(size(gs))
-#     println(gs[:,end])
-#     println("probs")
-#     println(size(Array(ŷ )))
-#     println(Array(ŷ )[:,end])
-#     println("l: $(vec(ls)[end])")
-#     gs = vec(mapslices(sum, gs, 2))
-#     display(gs)
-#     println()
-#     display(reshape(Array(accum), 4, 4))
-#     if any(isinf, vec(ls))
-#         idx = find(isinf, vec(ls))
-#         println("alphas $(reshape(Array(alphas), U′, T)'[idx,:])")
-#         println("betas $(reshape(Array(betas), U′, T)'[idx,:])")
-#         println("outputs $(reshape(Array(output), U′, T)'[idx,:])")
-#     end
+    
     ŷ = alpha = beta = output = accum = grads = nothing
+    
     return vec(ls), gs
 end
 
 ctc(ŷ::TrackedArray, y::AbstractArray) = Flux.Tracker.track(ctc, ŷ, y)
 
 @grad function ctc(ŷ, y)
-#     ls, gs = ctc(Flux.Tracker.data(cpu(ŷ)), y)
     ls, gs = ctc(Flux.Tracker.data(ŷ), y)
-#     grads = -1 * exp.(gpu(accum) .- gpu(ŷ) .- gpu(Array(ls')))
-#     return isinf(mean(ls)) ? 10000 : mean(ls), Δ -> (gpu(gs), Δ)
     return mean(ls), Δ -> (Δ .* gpu(gs), Δ)
 end
