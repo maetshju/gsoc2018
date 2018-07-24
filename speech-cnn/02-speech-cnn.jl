@@ -1,5 +1,5 @@
 using Flux
-using Flux: relu, crossentropy, logitcrossentropy, @epochs, testmode!
+using Flux: relu, crossentropy, logitcrossentropy, @epochs, testmode!, throttle
 using Flux.Tracker: back!
 using Flux.Optimise: runall, @interrupts, SGD
 # using NNlib: σ_stable, logsoftmax
@@ -14,7 +14,7 @@ const TRAINDIR = "train"
 const TESTDIR = "test"
 const EPS = 1e-7
 const BATCHSIZE = 20
-const ADAM_EPOCHS = 20
+const ADAM_EPOCHS = 100
 const SGD_EPOCHS = 10
 
 println("Building network")
@@ -89,9 +89,10 @@ Caclulates the connectionist temporal classification loss for `x` and `y`.
 """
 function loss(x, y)
     ms = net(x)
-#     println("output 1: $(ms[1,:])")
+    println("output 1: $(ms[:,1])")
 #     ls, gs = ctc(cpu(Flux.Tracker.data(ms)), y)
     l = ctc(ms, y)
+#     ms = nothing
 #     return ls, gs, ms
     return l
 end
@@ -100,6 +101,7 @@ function ctctrain!(loss, data, opt; cb = () -> ())
     cb = runall(cb)
     opt = runall(opt)
     losses = Vector()
+    batchLosses = Vector()
     counter = 0
 #     idx = 1
 #     lenData = length(data)
@@ -117,28 +119,33 @@ function ctctrain!(loss, data, opt; cb = () -> ())
         l = loss(d...)
 #         push!(losses, mean(ls))
         push!(losses, Flux.Tracker.data(l))
+#         push!(batchLosses, l)
         println("example loss: $(losses[end])")
         println("mean loss over time: $(mean(losses))")
 #         println(l.tracker.f)
         
 #         @interrupts Flux.Tracker.back!(ms[1:end], gs[1:end])
         @interrupts Flux.Tracker.back!(l)
+#         opt()
         cb() == :stop && break
         l = nothing
-        ls = nothing
-        gs = nothing
-        ms = nothing
-        
+#         ls = nothing
+#         gs = nothing
+#         ms = nothing
+        gc()
         counter += 1
         if counter == BATCHSIZE
+#             @interrupts Flux.Tracker.back!(sum(batchLosses))
+#             batchLosses = Vector()
 #             println("1st example loss: $(mean(loss(data[1]...)[1]))")
 #             clamp!.(params(model), -20, 20)
             opt()
             counter = 0
+            gc()
         end
     end
     opt()
-    println("mean epoch loss: $(mean(losses))")
+#     println("mean epoch loss: $(mean(losses))")
 end
 
 function main()
@@ -166,17 +173,29 @@ println("Training")
 # Flux.train!(loss, data, opt)
 # println("EPOCH 1")
 # ctctrain!(loss, trainData, opt)
+chunkSize = 1000
 for i=1:ADAM_EPOCHS
     println("EPOCH $(i)")
-    ctctrain!(loss, shuffle(trainData), opt)
+#     trainData = shuffle(trainData)
+#     for i=1:ceil(Int, length(trainData) / chunkSize)
+#         start = ((i-1) * chunkSize) + 1
+#         last = min(start + (chunkSize - 1), length(trainData))
+#         dataChunk = trainData[start:last]
+#         ctctrain!(loss, gpu.(dataChunk), opt)
+#     end
+#     Flux.train!(loss, trainData, opt; cb = () -> throttle(@show(loss(trainData[1]...)), 10))
+    trainData = shuffle(trainData)
+    valData = shuffle(valData)
+    ctctrain!(loss, trainData, opt)
+    println("Saving epoch results")
 #     BSON.@save "mel_rmsprop20sgd10_adamepoch$(i).bson" net
-    BSON.@save "trackedloss_poch$(i).bson" net
+    BSON.@save "trackedloss100_epoch$(i).bson" net
     testmode!(net)
-    print("Validating\r")
-    println("Validation Phoneme Error Rate. $(evaluatePER(net, gpu.(valData)))")
+    print("Validating")
+    println("Validation Phoneme Error Rate. $(evaluatePER(net, valData))")
     valLosses = Vector()
     for d in shuffle(valData)
-        append!(valLosses, loss(d...)[1])
+        append!(valLosses, Flux.Tracker.data(loss(d...)))
     end
     println("Mean validation loss: $(mean(valLosses))")
     testmode!(net, false)

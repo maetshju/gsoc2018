@@ -15,34 +15,40 @@ function log_plus_f(p1, p2)
 #     elseif isinf(p2)
 #         return p1
 #     end
-    s = p1 + CUDAnative.log(1+CUDAnative.exp(p2 - p1))
-    # With two very small numbers such as, such as -900 and -800, this will return
-    # Inf32 because -800 - -900 = 100, and exp(100) is Inf with Float32 values.
-    # Rationally, this should be -Inf32, because the calculation is ln(exp(-900) + exp(-800)),
-    # which while not truly 0, is effectively 0 and is too small to be represented with 32 bit
-    # floating point numbers
-    s == Inf32 && return -Inf32
-    return s
+
+    # always want the greater number on the left in the exponentiation;
+    # the magnitude difference may end up making the number very positive
+    # which will cause exp() to return Inf
+    # E.g., a = -900, b = -800, will give exp(-800 - -900), which will be
+    # Inf for Float32 values
+    if p1 < p2
+        p1, p2 = p2, p1
+    end
+
+#     s = p1 + CUDAnative.log(1+CUDAnative.exp(p2 - p1))
+    return p1 + CUDAnative.log(1+CUDAnative.exp(p2 - p1))
 end
 
 
 function logadd(a, b)
 
-    if isinf(a)
-        return b
-    elseif isinf(b)
-        return a
+    isinf(a) && return b
+    isinf(b) && return a
+    
+    if a < b
+        a, b = b, a
     end
     
     if isnan(a) || isnan(b)
         error("NAN HAPPENED IN LOGADD")
     end
+    
     return a + log(1+exp(b-a))
 end
 
 function logsum(a)
-    s = a[1]
-    for item in a[2:end]
+    s = -Inf32
+    for item in a
         s = logadd(s, item)
     end
     return s
@@ -75,7 +81,8 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
     tid = threadIdx().x
     L = labelSize
     T = uttLength
-    S = 2*L + 1
+#     S = 2*L + 1
+    S = length(labelsWithBlanks)
     
     if L + repeats > T
         return nothing
@@ -122,7 +129,7 @@ function computeAlphaKernel(probs, labelSize, uttLength, repeats, labelsWithoutB
             
             prevSum = log_plus_f(alpha[startPrevRow + idx], alpha[startPrevRow + idx-1])
             
-            if labels[idx] != blankLabel && idx > 2 && labels[idx] != labels[idx-2]
+            if labels[idx] != blankLabel && idx != 2 && labels[idx] != labels[idx-2]
                 prevSum = log_plus_f(prevSum, alpha[startPrevRow + idx-2])
             end
             
@@ -351,7 +358,7 @@ end
 
 function ctc(ŷ, y)
 
-    blank = size(ŷ, 1)
+    blank = Int32(size(ŷ, 1))
 #     exit()
 #     println(blank)
 #     println(size(ŷ))
@@ -373,8 +380,8 @@ function ctc(ŷ, y)
     U′ = 2*length(z) + 1
 #     println("$(T), $(U′)")
 #     alphas = Flux.TrackedArray([-Inf for x in 1:(size(ŷ,1) * U′)])
-    alphas = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,2) * U′)])
-    betas = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,2) * U′)])
+    alphas = gpu([-Inf32 for x in 1:(size(ŷ,2) * U′)])
+    betas = gpu([-Inf32 for x in 1:(size(ŷ,2) * U′)])
 #     println()
 #     println(ŷ )
 #     println(size(alphas))
@@ -382,22 +389,22 @@ function ctc(ŷ, y)
     #ŷ = Flux.Tracker.data(ŷ )
 #     ŷ  = clamp!(ŷ , Float32(0.01) / 61, 0.99)
 #     ŷ  = CUDAdrv.CuArray(map(x -> x == 1 ? x - EPS : x + EPS, ŷ ))
-    ŷ  = CUDAdrv.CuArray(ŷ )
-    nRepeats = countRepeats(labels)
+#         ŷ  = CUDAdrv.CuArray(ŷ )
 #     println("labels: $(z′)")
     
+    nRepeats = countRepeats(labels)
     
 #     alphalikelihoods = CUDAdrv.CuArray{Float32}(size(ŷ,2))
 #     betalikelihoods = similar(alphalikelihoods)
 
 #     println("beginning alphas computation")
-    @cuda (1, U′) computeAlphaKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, blank)
+    @cuda (1, U′) computeAlphaKernel(ŷ, length(z), size(ŷ,2), nRepeats, gpu(z), CUDAdrv.CuArray(z′), alphas, blank)
 #     @cuda threads=U′ computeAlphaKernel(ŷ, length(z), size(ŷ,1), nRepeats, CUDAdrv.CuArray(z), CUDAdrv.CuArray(z′), alphas, alphalikelihoods, blank)
 #     
 # #     @cuda threads=U′ alpha2kernel(ŷ, alphas, T, U′, alphalikelihoods, CUDAdrv.CuArray(z′), blank)
 # 
 #     println("alphas done")
-    grads = CUDAdrv.CuArray([-Inf32 for x in 1:length(ŷ)])
+    grads = gpu([-Inf32 for x in 1:length(ŷ)])
 # 
 #     println("extracting alphas")
 #     println(Array(alphas))
@@ -407,8 +414,9 @@ function ctc(ŷ, y)
     
 #     println(typeof(betas))
 #     println("beginning betas computation")
-    output = CUDAdrv.CuArray([-Inf32 for x in 1:(size(ŷ,2) * U′)])
-    accum = CUDAdrv.CuArray([-Inf32 for x in 1:length(ŷ)])
+    output = gpu([-Inf32 for x in 1:(size(ŷ,2) * U′)])
+    accum = gpu([-Inf32 for x in 1:length(ŷ)])
+    
     @cuda (1, U′) computeBetasAndGradKernel(ŷ, length(z), size(ŷ,2), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, grads, blank)
 #     @cuda threads=U′ computeBetasAndGradKernel(ŷ, length(z), size(ŷ,1), nRepeats, CUDAdrv.CuArray(z′), alphas, betas, output, accum, alphalikelihoods, betalikelihoods, grads, blank)
 #     println("betas computed")
@@ -480,12 +488,22 @@ function ctc(ŷ, y)
 #     display(gs)
 #     println()
 #     display(reshape(Array(accum), 4, 4))
+#     if any(isinf, vec(ls))
+#         idx = find(isinf, vec(ls))
+#         println("alphas $(reshape(Array(alphas), U′, T)'[idx,:])")
+#         println("betas $(reshape(Array(betas), U′, T)'[idx,:])")
+#         println("outputs $(reshape(Array(output), U′, T)'[idx,:])")
+#     end
+    ŷ = alpha = beta = output = accum = grads = nothing
     return vec(ls), gs
 end
 
 ctc(ŷ::TrackedArray, y::AbstractArray) = Flux.Tracker.track(ctc, ŷ, y)
 
 @grad function ctc(ŷ, y)
-    ls, gs = ctc(Flux.Tracker.data(cpu(ŷ)), y)
-    return mean(ls), Δ -> (gpu(gs), Δ)
+#     ls, gs = ctc(Flux.Tracker.data(cpu(ŷ)), y)
+    ls, gs = ctc(Flux.Tracker.data(ŷ), y)
+#     grads = -1 * exp.(gpu(accum) .- gpu(ŷ) .- gpu(Array(ls')))
+#     return isinf(mean(ls)) ? 10000 : mean(ls), Δ -> (gpu(gs), Δ)
+    return mean(ls), Δ -> (Δ .* gpu(gs), Δ)
 end
