@@ -202,10 +202,12 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
         
         # ∂L/∂a (where a is activation before softmax)
 #         grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
+        # ∂L/∂a (where a is activation before logsoftmax)
+        grad[startProbRow + idx] = CUDAnative.exp(probs[startProbRow + idx]) - CUDAnative.exp(accum[startProbRow + idx] - s)
         # ∂L/∂y (where y is network output with regular softmax)
 #         grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
         # ∂L/∂y (where y is network output with logsoftmax)
-        grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + probs[startProbRow + idx]))
+#         grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + probs[startProbRow + idx]))
         idx += blockDim().x
     end
     
@@ -223,16 +225,18 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             idx = tid
             while idx <= S-1
                 
-                nextSum = log_plus_f(beta[startNextRow + idx], beta[startNextRow + idx+1])
+                nextSum = log_plus_f(beta[startNextRow + idx] + probs[startProbCol + labels[idx]], beta[startNextRow + idx+1] + probs[startProbCol + labels[idx+1]])
                 
                 if labels[idx] != blankLabel && idx != S-1 && labels[idx] != labels[idx+2]
-                    nextSum = log_plus_f(nextSum, beta[startNextRow + idx + 2])
+                    nextSum = log_plus_f(nextSum, beta[startNextRow + idx + 2] + probs[startProbCol + labels[idx+2]])
                 end
                 
                 if idx > 2*t
                     beta[idx + startCurRow] = -Inf32
                 else
-                    beta[idx + startCurRow] = nextSum + probs[startProbCol + labels[idx]]
+#                     beta[idx + startCurRow] = nextSum + probs[startProbCol + labels[idx]]
+                    beta[idx + startCurRow] = nextSum
+                        
                 end
 #                 beta[idx + startCurRow] = t
                 
@@ -282,12 +286,14 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
             for i=1:S
                 s = log_plus_f(s, output[startOutputRow + i])
             end
-            # ∂L/∂a (where a is activation before softmax)
+        # ∂L/∂a (where a is activation before softmax)
 #         grad[startProbRow + idx] = probs[startProbRow + idx] - CUDAnative.exp(accum[startProbRow + idx] - s)
-            # ∂L/∂y (where y is network output with regular softmax)
+        # ∂L/∂a (where a is activation before logsoftmax)
+        grad[startProbRow + idx] = CUDAnative.exp(probs[startProbRow + idx]) - CUDAnative.exp(accum[startProbRow + idx] - s)
+        # ∂L/∂y (where y is network output with regular softmax)
 #         grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + CUDAnative.log(probs[startProbRow + idx])))
-            # ∂L/∂y (where y is network output with logsoftmax)
-            grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + probs[startProbRow + idx]))
+        # ∂L/∂y (where y is network output with logsoftmax)
+#             grad[startProbRow + idx] = -1 * CUDAnative.exp(accum[startProbRow + idx] - (s + probs[startProbRow + idx]))
             idx += blockDim().x
         end
         
@@ -303,8 +309,10 @@ function computeBetasAndGradKernel(probs, labelSize, uttLength,
     return nothing
 end
 
-function ctc(ŷ, y)
+function ctc(ŷ::CuArrays.CuArray, y; activation=logsoftmax)
 
+    ŷ = activation(ŷ)
+    
     blank = Int32(size(ŷ, 1))
     labels = indmax.([y[i,:] for i=1:size(y,1)])
     z = F(labels, blank)
@@ -334,15 +342,17 @@ function ctc(ŷ, y)
     ls = Array(reshape(Array(output), U′, T)')
     ls = -1 .* mapslices(logsum, ls, 2)
     gs = reshape(Array(grads), size(ŷ,1), size(ŷ,2))
+    println(alphas)
+    println(betas)
     
-    ŷ = alpha = beta = output = accum = grads = nothing
+    ŷ = alphas = betas = output = accum = grads = nothing
     
-    return vec(ls), gs
+    return mean(ls), gs
 end
 
 ctc(ŷ::TrackedArray, y::AbstractArray) = Flux.Tracker.track(ctc, ŷ, y)
 
 @grad function ctc(ŷ, y)
-    ls, gs = ctc(Flux.Tracker.data(ŷ), y)
-    return mean(ls), Δ -> (Δ .* gpu(gs), Δ)
+    ls, gs = ctc(Flux.Tracker.data(ŷ), Flux.Tracker.data(y))
+    return ls, Δ -> (Δ .* gpu(gs), Δ)
 end
