@@ -342,8 +342,8 @@ function ctc(ŷ::CuArrays.CuArray, y; activation=logsoftmax)
     ls = Array(reshape(Array(output), U′, T)')
     ls = -1 .* mapslices(logsum, ls, 2)
     gs = reshape(Array(grads), size(ŷ,1), size(ŷ,2))
-    println(alphas)
-    println(betas)
+#     println(alphas)
+#     println(betas)
     
     ŷ = alphas = betas = output = accum = grads = nothing
     

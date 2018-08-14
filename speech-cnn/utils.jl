@@ -1,3 +1,5 @@
+using JLD
+
 function F(A, blank)
     seq = [A[1]]
     for a in A[2:end]
@@ -62,17 +64,20 @@ end
 Reads in each jld file contained in `dataDir` and normalizes the data.
 """
 function readData(dataDir)
-    fnames = [x for x in readdir(dataDir) if endswith(x, "jld")]
+    fnames = [x for x in readdir(dataDir) if endswith(x, "bson")]
 
     Xs = Vector()
     Ys = Vector()
 
     for (i, fname) in enumerate(fnames)
         print(string(i) * "/" * string(length(fnames)) * "\r")
-        x, y = load(joinpath(dataDir, fname), "x", "y")
+#         x, y = load(joinpath(dataDir, fname), "x", "y")
+        BSON.@load joinpath(dataDir, fname) x y
         x .-= mean(x,2)
         x ./= std(x,2)
+#         x = reshape(x, size(x)..., 1)
         x = reshape(x, (size(x)[1], 41, 3, 1))
+#         x = reshape(x', 41, size(x)[1], 3, 1)
 # 	    x = gpu(x)
         #y = gpu.([y[i,:] for i in 1:size(y,1)])
 # 	y = gpu(y)
@@ -126,6 +131,7 @@ Evaluates performance by calculating phoneme error rate on `data`
 function evaluatePER(model, data)
     edits = 0
     len = 0
+    pers = Vector()
     for (i, (x, y)) in enumerate(data)
         y = F(indmax.([y[i,:] for i=1:size(y,1)]), 62)
         ŷ  = model(x)
@@ -138,7 +144,38 @@ function evaluatePER(model, data)
 	# println("ŷ  $(ŷ )")
         edits += e
         len += max(length(y), length(ŷ ))
+        push!(pers, edits / len)
     end
+#     println(sort(pers))
+    return mean(pers)
+end
 
+function evaluatePERrnn(model, data)
+
+    edits = 0
+    len = 0
+    for (i, (x, y)) in enumerate(data)
+    
+        x = reshape(x, size(x, 1), prod(size(x)[2:end]))
+        newx = [x[1,:]]
+        for i=2:size(x,1)
+            append!(newx, [x[i,:]])
+        end
+    #     x = [x[i,:] for i in 1:size(x, 1)]
+        x = gpu.(newx)
+    
+        y = F(indmax.([y[i,:] for i=1:size(y,1)]), 62)
+        ŷ  = model(x)
+        ŷ  = indmax.([ŷ[:,i] for i=1:size(ŷ,2)])
+        println("prediction $(i): $(ŷ )")
+#         println(y)
+#         println(ŷ )
+        e = lev(y, ŷ)
+	# println("y $(y)")
+	# println("ŷ  $(ŷ )")
+        edits += e
+        len += max(length(y), length(ŷ ))
+    end
+    
     return edits / len
 end
